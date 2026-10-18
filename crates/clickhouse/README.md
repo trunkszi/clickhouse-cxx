@@ -1,59 +1,280 @@
-# Derived synchronous rows
+# clickhouse
 
-`#[derive(Row)]` generates `EventBatch`, `EventBlockView<'a>`, and `EventRef<'a>`.
-`#[row(table = "events", rename_all = "camelCase")]` configures table metadata
-and column naming; a field can override its name with `#[row(column = "name")]`.
-`#[row(crate_path = "renamed_dependency")]` supports a renamed runtime dependency.
+The `clickhouse` crate is a synchronous, thread-affine ClickHouse client. It
+provides Native TCP/TCPS and HTTP/2 transports, derived row batches, checked
+zero-copy block views, a serde bridge, and explicit buffer reuse.
 
-Batches accept either `&Event` or `EventRef`. Strings, binary strings, arrays,
-nullable values, and maps append into flat reusable column buffers. An append
-copies borrowed values into owned batch storage without cloning the source row
-or allocating an owned string for each row. `clear()` retains all capacities.
-`to_block(&self)` materializes an independently owned block and therefore copies
-column buffers; it does not claim an allocation-free write pipeline.
+## Execution model
 
-A checked block view exposes numeric columns as slices into block storage.
-String and array fields in `EventRef` borrow that storage. Maps expose an
-allocation-free entry iterator, and nullable fields preserve their null flags.
-Boolean columns expose validated bytes, while row references decode them as
-`bool`; invalid bit patterns are rejected instead of casting arbitrary bytes to
-`&[bool]`. View construction, borrowed iteration, and warmed batch refills have
-an allocation-counting test.
+- **Synchronous**: all calls block on the calling thread. The crate has no
+  async runtime and no background executor.
+- **Thread-affine**: `Client`, transport, `EventLoop`, and `TlsSession` handles
+  are `!Send + !Sync`. Native sockets, blocks, views, and callbacks stay on
+  their creating thread; the I/O path takes no mutex.
+- **`thread_local!` scaling**: `ThreadLocalClient` keeps one client per calling
+  OS thread. `WorkerClient` leases lock-free slots `0..N` on the calling thread
+  and balances requests across its own connections. No data-plane work crosses
+  a thread boundary.
+- **Observable failover**: `ClientConfig::on_failover` stores one `FnMut`
+  observer; use `Rc<RefCell<_>>` for state shared with that callback.
 
-The row adapters support Rust numeric primitives, bool, String, borrowed str,
-Cow strings and bytes, primitive Vec arrays, recursively nullable fields, and
-BTreeMap/HashMap fields. Vec<u8> is an Array(UInt8); use `#[row(bytes)]` to select
-a binary ClickHouse String. Borrowed byte slices and Cow byte slices select
-binary String automatically. Arbitrary type and const generics are rejected;
-struct lifetime parameters are supported.
+## Cargo features
 
-Rows without borrowed input lifetimes also implement `OwnedRow`. `RowClient`
-provides `insert_batch`, `insert_rows`, `query_views`, and `query_rows` using only
-synchronous `insert_block` and `query_blocks` transport primitives. `query_views`
-keeps backing blocks alive during the callback; `query_rows` explicitly
-materializes owned values.
+| Build | Cargo features | Transports | Native toolchain |
+| :--- | :--- | :--- | :--- |
+| Native TCP/TCPS (default) | `default` (`tcp`) | `tcp://`, `tcps://` | `clickhouse-sys` + `clickhouse-cpp` |
+| HTTP/2 only | `default-features = false`, `features = ["http"]` | `http://`, `https://` | none |
+| Both | `features = ["tcp", "http"]` | all schemes | required |
+| Tracing | add `"tracing"` | unchanged | unchanged |
 
-`cargo test -p clickhouse -p clickhouse-macros` includes a live Docker test. It
-starts `clickhouse/clickhouse-server:26.8.2.7` on ephemeral Native and HTTP ports,
-uses a controlled synchronous HTTP RowBinary fixture, verifies all four typed
-client operations, and removes its owned container on Drop. This fixture is not
-a replacement for integrated Native/HTTP transport tests.
+```toml
+clickhouse = { path = "crates/clickhouse" }
+clickhouse = { path = "crates/clickhouse", default-features = false, features = ["http"] }
+clickhouse = { path = "crates/clickhouse", features = ["tcp", "http"] }
+clickhouse = { path = "crates/clickhouse", features = ["tracing"] }
+```
 
-## Examples & Tutorials
+`http`-only builds never compile `clickhouse-sys`. The `tracing` feature emits
+only cold control-plane lifecycle, failover, and `OnServerLog` events; hot
+data-plane paths emit zero logs. Every dependency in this crate's manifest uses
+inline-table syntax.
 
-The runnable tutorial lives in `examples/`. Every example runs without a
-server; examples with a live section read `CLICKHOUSE_URL` (for example
-`tcp://127.0.0.1:9000`) and optional `CLICKHOUSE_USER`,
-`CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE` values.
+## Derived rows
+
+```rust
+use clickhouse::{Batch, Client, Endpoint, Row};
+use clickhouse::row::RowClient;
+
+#[derive(Row, Default)]
+#[row(table = "events", rename_all = "snake_case")]
+struct Event {
+    event_id: u64,
+    kind: String,
+    score: f64,
+}
+
+let endpoint = Endpoint::parse("tcp://127.0.0.1:9000")?;
+let mut client = Client::connect(endpoint, "default", "", "default")?;
+
+let mut batch = EventBatch::with_capacity(2);
+batch.push(&Event { event_id: 1, kind: String::from("trade"), score: 0.5 });
+batch.push_ref(EventRef { event_id: 2, kind: "quote", score: 1.5 });
+
+let block = batch.to_block()?;
+let view = EventBlockView::try_from_block(&block)?;
+for row in view.iter() {
+    println!("{} {}", row.event_id, row.kind);
+}
+
+batch.clear();
+```
+
+`#[derive(Row)]` generates `<Name>Batch` (struct of arrays), `<Name>BlockView<'a>`
+(checked zero-copy view), `<Name>Ref<'a>` (borrowed row), and the `Row` /
+`OwnedRow` implementations. `#[row(...)]` supports `table`, `rename_all`,
+`column`, `bytes`, and `crate_path`; the derive also honors
+`#[serde(rename_all)]`, `#[serde(rename)]`, and `#[serde(with = "serde_bytes")]`.
+
+Fixed-width fields project as `&'a [T]` through `zerocopy`; strings, arrays,
+nullable values, and maps borrow the block storage.
+
+## Three read modes
+
+**Owned** rows materialize values that outlive the block:
+
+```rust
+let rows: Vec<Event> = client.query_rows(sql)?;
+let rows: Vec<Metric> = SerdeBridge::block_to_rows(&block)?;
+```
+
+**Callback** forms stream rows while the backing block stays alive:
+
+```rust
+client.query_views::<Event, _>(sql, |view| {
+    for row in view.iter() {
+        process(row)?;
+    }
+    Ok(())
+})?;
+
+client.query_row_refs::<Event, _>(sql, |row| {
+    process_ref(row)
+})?;
+
+client.query_for_each::<Event, _>(sql, |row| {
+    process_owned(row)
+})?;
+
+let count = SerdeBridge::from_rowbinary_with::<Metric, _>(&bytes, |row| {
+    consume(row);
+    Ok(())
+})?;
+```
+
+**Caller-supplied memory** fills buffers the caller owns:
+
+```rust
+let mut ids = vec![0u64; 1024];
+let copied = native.read_into_slice(0, &mut ids)?;
+
+let mut payload = Vec::new();
+let len = native.read_bytes_into(1, 0, &mut payload)?;
+
+let mut events: Vec<Event> = std::iter::repeat_with(Event::default).take(1024).collect();
+let written = client.query_rows_into_slice(sql, &mut events)?;
+
+let mut batch = EventBatch::with_capacity(1024);
+let written = client.query_batch_into::<Event>(sql, &mut batch)?;
+
+let mut block = Block::new();
+let written = client.query_block_into::<Event>(sql, &mut block)?;
+
+let mut metrics = std::iter::repeat_with(Metric::default).take(1024).collect::<Vec<_>>();
+let written = SerdeBridge::from_rowbinary_into_slice(&bytes, &mut metrics)?;
+```
+
+`Column::read_into_slice` and `Column::read_bytes_into` provide the same
+contract for the pure-Rust row layer.
+
+## Multi-threaded scaling
+
+Share a worker pool, not a `Client`. Every slot and callback runs on the thread
+that called `with`.
+
+```rust
+use std::thread;
+use clickhouse::{Client, ClientConfig};
+
+let config = ClientConfig::parse(
+    "tcp://10.0.0.1:9000,tcp://10.0.0.2:9000,tcp://10.0.0.3:9000",
+)?.with_workers(8);
+
+let workers = Client::connect_workers(config)?;
+thread::scope(|scope| {
+    for _ in 0..8 {
+        scope.spawn(|| workers.with(|client| client.ping()));
+    }
+});
+```
+
+`Client::thread_local(config)` provides one client per calling OS thread. Each
+worker slot stripes endpoints with
+`endpoints[(worker_id + step) % endpoints.len()]`; no request or result crosses
+a thread boundary.
+
+## BufferPolicy
+
+`BufferPolicy::default()` retains at most 65,536 rows and 8 MiB per buffer.
+`unbounded()` keeps every warmed allocation; `minimal()` releases capacity on
+every clear.
+
+```rust
+let mut policy = BufferPolicy::default();
+policy.max_retained_rows = 32_768;
+policy.max_retained_bytes = 4 * 1024 * 1024;
+
+batch.clear_with_policy(policy);
+batch.shrink_to_fit();
+let retained = batch.allocated_bytes();
+```
+
+`Block` exposes the same `clear_with_policy`, `clear_unbounded`,
+`shrink_to_fit`, and `allocated_bytes` methods.
+
+## SerdeBridge
+
+`SerdeBridge` accepts structs that implement only `serde::Serialize` and
+`serde::Deserialize`.
+
+```rust
+use std::collections::BTreeMap;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Metric {
+    ts: u32,
+    tags: BTreeMap<String, u64>,
+}
+
+let (names, bytes) = SerdeBridge::to_rowbinary(&metrics)?;
+let rows: Vec<Metric> = SerdeBridge::from_rowbinary(&bytes)?;
+
+let block = SerdeBridge::rows_to_block(&metrics)?;
+let rows: Vec<Metric> = SerdeBridge::block_to_rows(&block)?;
+```
+
+`Option<T>` maps to `Nullable`, `Vec<T>` to `Array`, `BTreeMap`/`HashMap` to
+`Map(K, V)`, and `serde_bytes` to binary `String`. Logical fixed columns
+(`Date`, `Date32`, `DateTime`, `DateTime64`, `IPv4`, `Decimal32/64/128`) decode
+into their underlying integer width; `UUID` and `IPv6` decode into a
+`serde_bytes` byte field.
+
+## Native TCPS and failover
+
+```rust
+use std::time::Duration;
+use clickhouse::{
+    Client, ClientConfig, EndpointSelection, FailoverPolicy, TlsSettings,
+};
+
+let tls = TlsSettings::new()
+    .with_ca_pem(std::fs::read("ca.pem")?)
+    .with_sni("clickhouse.internal")
+    .with_connect_timeout(Duration::from_secs(3));
+
+let policy = FailoverPolicy::new()
+    .with_selection(EndpointSelection::LatencyAware)
+    .with_send_retries(2)
+    .with_retry_timeout(Duration::from_millis(250))
+    .with_circuit(3, Duration::from_secs(30));
+
+let config = ClientConfig::parse("tcps://node-a:9440,tcps://node-b:9440")?
+    .with_tls(tls)
+    .with_policy(policy)
+    .on_failover(|event| {
+        eprintln!("{} -> {}", event.old_endpoint, event.new_endpoint);
+    });
+
+let mut client = Client::new(config)?;
+```
+
+The strategies are `RoundRobin`, `Random`, `LatencyAware`, and `Sticky`. A
+circuit opens after the configured consecutive failures and admits a half-open
+probe after the cooldown. Writes are never replayed automatically.
+
+## Column family map
+
+| ClickHouse family | Rust surface | Notes |
+| :--- | :--- | :--- |
+| Numeric | `u8`..`i128`, `f32`, `f64`, `WireColumn::fixed` | fixed-width `&[T]` |
+| Bool | `ChBool`, `bool` | one byte |
+| String | `StringColumn`, `String`, `&str`, `Cow<str>` | UTF-8 or binary |
+| FixedString(N) | `FixedStringColumn::new(N)` | fixed byte width |
+| Date/DateTime/Time | `Date`, `Date32`, `DateTime`, `DateTime64`, `Time`, `Time64` | integer newtypes |
+| Decimal | `Decimal32`, `Decimal64`, `Decimal128`, `Decimal256Column` | width follows precision |
+| UUID | `Uuid([u8; 16])` | 16 bytes |
+| IPv4/IPv6 | `Ipv4(u32)`, `Ipv6([u8; 16])` | fixed width |
+| Enum8/Enum16 | `Enum8(i8)`, `Enum16(i16)` | fixed width |
+| Nullable(T) | `NullableColumn`, `Option<T>` | null map plus values |
+| Array(T) | `ArrayColumn`, `Vec<T>` | flat offsets |
+| LowCardinality(T) | `LowCardinalityColumn` | dictionary encoded |
+| Tuple(...) | `TupleColumn` | composite columns |
+| Map(K, V) | `MapColumn`, `BTreeMap`, `HashMap` | key and value columns |
+| Geo | `GeoColumn`, `GeoKind` | Point, Ring, Polygon, MultiPolygon |
+| JSON | `StringColumn::new_json()` | JSON column |
+| Nothing | `NothingColumn` | empty payload |
+
+## Examples
 
 | Example | Topic |
 | :--- | :--- |
-| `01_quickstart_native_tcp` | `Block` and `WireBlock` construction, schema inspection, zero-copy fixed-width projections, optional `Client` round-trip. |
-| `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes, borrowed `Cow`/`Option`/`Vec`/`BTreeMap` fields, generated `Batch`, `BlockView`, and `Ref`. |
-| `03_memory_policy_and_batch_reuse` | `clickhouse::BufferPolicy` (`default`, `unbounded`, `minimal`), aggregate `allocated_bytes()`, `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
-| `04_full_column_type_matrix` | All column families from numeric and Bool through Nullable, Array, Tuple, Map, Geo, JSON, and Nothing. |
-| `05_dual_transport_and_row_client` | `RowClient` over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map rows. |
-| `06_serde_compatibility` | `SerdeBridge` RowBinary and `Block` conversion for serde-only structs including `BTreeMap` fields, `insert_serde`/`query_serde`, and serde naming/bytes attributes in `#[derive(Row)]`. |
+| `01_quickstart_native_tcp` | `Block` and `WireBlock`, schema inspection, zero-copy slices, optional Native TCP round-trip. |
+| `02_derive_row_and_zero_copy_views` | `#[derive(Row)]`, `Batch`, `BlockView`, `Ref`, and callback/caller-buffer reads. |
+| `03_memory_policy_and_batch_reuse` | `BufferPolicy`, `allocated_bytes`, `clear_with_policy`, `shrink_to_fit`. |
+| `04_full_column_type_matrix` | All 17 column families, including wrappers, Geo, JSON, and Nothing. |
+| `05_dual_transport_and_row_client` | One `RowClient` surface over an in-memory transport and Native TCP. |
+| `06_serde_compatibility` | RowBinary and Block conversion, maps, logical types, and serde attributes. |
+| `07_streaming_and_callbacks` | Reserved walkthrough for streaming and caller-buffer APIs exercised by examples 02 and 06. |
+| `08_tls_and_failover_policy` | Native TCPS trust, four endpoint policies, observers, and circuit diagnostics. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -62,49 +283,20 @@ cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
 cargo run -p clickhouse --example 06_serde_compatibility
+cargo run -p clickhouse --example 08_tls_and_failover_policy
 ```
 
-## Serde Compatibility
+Examples run without a server. Live sections read `CLICKHOUSE_URL`,
+`CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE`; the TLS
+example also reads `CLICKHOUSE_TCPS_URLS`, `CLICKHOUSE_CA_PEM`, and
+`CLICKHOUSE_TLS_SNI`.
 
-`SerdeBridge` accepts structs that implement only `serde::Serialize` and
-`serde::Deserialize`; `#[derive(Row)]` is not required.
-
-- `SerdeBridge::to_rowbinary(&rows)` encodes a slice into ClickHouse
-  `RowBinary` and returns the serde field names captured from the first row.
-- `SerdeBridge::from_rowbinary(&bytes)` decodes concatenated RowBinary rows
-  back into owned values.
-- `SerdeBridge::rows_to_block(&rows)` builds the row-layer `Block` by
-  dispatching serde fields into typed ClickHouse columns. `Option` becomes
-  `Nullable`, `Vec` becomes `Array`, `BTreeMap`/`HashMap` become `Map(K, V)`,
-  and `serde_bytes` payloads become binary `String` columns.
-- `SerdeBridge::block_to_rows(&block)` materializes rows from a block by
-  matching column names to serde field names. Logical fixed columns (`Date`,
-  `Date32`, `DateTime`, `DateTime64`, `IPv4`, `Decimal32/64/128`) decode into
-  their underlying integer width, and `UUID`/`IPv6` decode into a
-  `serde_bytes` byte field.
-
-`RowClient` exposes the same bridge as `insert_serde(table, &rows)` and
-`query_serde::<T>(sql)`, so an in-memory transport and the Native TCP `Client`
-share one typed API.
-
-`#[derive(Row)]` also understands the serde naming attributes:
-`#[serde(rename_all = "...")]` and `#[serde(rename = "...")]` select column
-names, and `#[serde(with = "serde_bytes")]` selects a binary `String` column
-instead of `Array(UInt8)`.
-
-## Native TLS and failover tutorial
-
-[`08_tls_and_failover_policy`](examples/08_tls_and_failover_policy.rs) runs offline
-by default and demonstrates four endpoint-selection policies. Its optional live
-section uses verified Native TCPS, CA/SNI configuration, local `Rc<RefCell<_>>`
-observers, health and circuit diagnostics, and explicit reconnection.
+## Tests
 
 ```bash
-cargo run -p clickhouse --example 08_tls_and_failover_policy
-CLICKHOUSE_TCPS_URLS=tcps://127.0.0.1:9440 \
-CLICKHOUSE_CA_PEM=/path/to/ca.pem CLICKHOUSE_TLS_SNI=localhost \
-  cargo run -p clickhouse --example 08_tls_and_failover_policy
+cargo test -p clickhouse -p clickhouse-macros
 ```
 
-Clients and their observers stay on one thread. Connection recovery does not
-automatically replay writes whose server-side outcome may be uncertain.
+The test suite starts `clickhouse/clickhouse-server:26.8.2.7` on ephemeral
+Native and HTTP ports, exercises the typed client operations, and removes its
+container on drop.

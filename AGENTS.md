@@ -1,27 +1,76 @@
 # clickhouse-cxx
 
-A general-purpose, purely synchronous, high-performance ClickHouse client SDK for Rust, powered by `cxx` (statically linking `clickhouse-cpp` for Native TCP) and `curl-rust` (with `rustls` and `http2` for HTTP/HTTPS).
+A synchronous, thread-affine ClickHouse client SDK for Rust. Native TCP and
+TCPS use `clickhouse-cpp` through `cxx`; HTTP and HTTPS use `curl-rust` with
+HTTP/2 and `rustls`; typed rows use `#[derive(Row)]`.
 
-## Coding & Architecture Standards
+## Synchronous & Thread-Affine Execution
 
-- **Zero Async Runtime**: The entire workspace is strictly synchronous. `tokio`, `futures`, `async-std`, and `smol` are forbidden.
-- **Zero-Clone & `Cow` First**: Prefer borrowing (`&'a T`, `&'a str`, `&'a [u8]`) and `std::borrow::Cow<'a, str>` / `Cow<'a, [u8]>` for configuration, SQL queries, table names, parameters, and error metadata. All clippy clone/to_owned lints (`clone_on_copy`, `redundant_clone`, `implicit_clone`, `unnecessary_to_owned`, `cloned_instead_of_copied`, `inefficient_to_string`) are enforced as `deny`.
-- **Buffer Reuse (`clear`)**: All `Batch` and `Block` buffers provide `.clear()` to reset lengths to zero while retaining allocated heap capacity across ingestion cycles.
-- **File Size Limit**: Every `.rs`, `.cpp`, and `.h` file must stay `<= 800` lines and contain zero chain-of-thought or session residue.
-- **Unsafe & Documentation**: Every `unsafe` block requires a `// SAFETY:` comment (`undocumented_unsafe_blocks = "deny"`), every `unsafe fn` requires `# Safety`, and every fallible/panicking public function requires `# Errors` / `# Panics` doc sections. `README.md`, source comments, rustdoc, error messages, and log events are all written in English.
-- **Git & Branch Discipline**: Every feature/ticket is developed in an isolated git worktree on a dedicated feature branch and merged into `main` strictly via rebase (`allow_rebase_merge = true`, `allow_merge_commit = false`, `allow_squash_merge = false`). Direct commits to `main` are forbidden once branch protection is active.
-- **Optional `tracing` Telemetry**: `tracing` is an optional cargo feature (`features = ["tracing"]`). When enabled, logs are emitted strictly on cold control-plane paths (connection lifecycle, endpoint failover episodes, and server `OnServerLog` events). Hot data-plane paths (`Batch` append, `BlockView` zero-copy slice projection, `RowBinary` serialization) emit zero logs; when the `tracing` feature is disabled, internal telemetry macros compile to no-ops.
+- **Synchronous**: every call blocks on the calling thread. `tokio`, `futures`,
+  `async-std`, and `smol` stay out of the workspace.
+- **Thread-affine core**: `Client`, transport, `EventLoop`, and `TlsSession`
+  handles are `!Send + !Sync`. Sockets, blocks, views, and callbacks remain on
+  their creating thread; the I/O path takes no mutex.
+- **`thread_local!` scaling**: `ThreadLocalClient` keeps one client per calling
+  OS thread. `WorkerClient` leases lock-free slots `0..N` on the calling thread,
+  configured by `ClientConfig::with_workers(N)`. Each slot stripes endpoints
+  with `endpoints[(worker_id + step) % len]`. Data-plane execution stays on the
+  calling thread; no cross-thread channel dispatch.
+- **Local observers**: `ClientConfig::on_failover` stores one `FnMut` callback;
+  shared state uses `Rc<RefCell<_>>` on the same thread.
 
-## Agent skills
+## Cargo Features & Dependencies
 
-### Issue tracker
+- **Transport features**: `crates/clickhouse` defines `default = ["tcp"]`;
+  `tcp` enables `clickhouse-sys` + `cxx`; `http` enables `curl` from
+  `https://github.com/trunkszi/curl-rust.git` branch `feat/event-loop-ws` with
+  `http2` + `rustls`, plus `lz4_flex` and `zstd`. `http`-only builds never
+  compile `clickhouse-sys`.
+- **Native TCP/TCPS**: `clickhouse-sys` builds `clickhouse-cpp` 3.x statically
+  with CMake; `cxx` bridges the API; `rustls` supplies custom `SocketFactory`
+  TLS streams.
+- **HTTP/2**: the HTTP transport speaks `FORMAT Native`, `FORMAT RowBinary`, and
+  `FORMAT ArrowStream` with the same typed rows and blocks.
+- **`tracing`**: optional and off by default. It emits cold control-plane
+  lifecycle, failover, and `OnServerLog` events; hot data-plane paths emit zero
+  logs. Disabled builds compile telemetry to no-ops.
+- **Inline manifests**: every dependency in every `Cargo.toml` uses
+  inline-table syntax, for example `clickhouse-sys = { workspace = true }`.
+- **Portable source resolution**: `crates/clickhouse-sys/build.rs` resolves
+  `clickhouse-cpp` through `CLICKHOUSE_CPP_DIR`, then
+  `../../vendor/clickhouse-cpp`, then `target/vendor-cache/clickhouse-cpp`,
+  with no hardcoded absolute paths.
 
-Issues and specs live as local markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+## Zero-Copy, `Cow` Borrowing & Read/Write Buffers
 
-### Triage labels
+- **Borrowed inputs**: APIs accept `&str`, `&[u8]`, `Cow<'a, str>`, or
+  `Cow<'a, [u8]>`.
+- **Zero-copy views**: `BlockView<'a>` projects fixed-width columns as
+  `&'a [T]` through `zerocopy`; string, array, nullable, and map projections
+  borrow the block.
+- **Reusable writes**: `Batch` and `Block` expose `clear()` and
+  `clear_with_policy(&BufferPolicy)`; `BufferPolicy::default()` retains at most
+  65,536 rows and 8 MiB.
+- **Callback reads**: `query_views`, `query_for_each`, `query_row_refs`, and the
+  `SerdeBridge` `_with` / `_for_each` forms stream rows while the backing block
+  is alive.
+- **Caller-buffer reads**: `read_into_slice`, `read_bytes_into`,
+  `query_rows_into_slice`, `query_batch_into`, `query_block_into`, and the
+  `SerdeBridge` `_into` / `_into_slice` forms fill memory the caller owns and
+  reuses.
 
-Uses the five default canonical triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+## Code & Repository Hygiene
 
-### Domain docs
-
-Single-context layout (`GLOSSARY.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+- **Domain names**: `WireBlock`, `WireColumn`, `FixedWireColumn`, `WireError`,
+  `column/`, and `wire_block.rs`; zero `cpp_*` or `Cpp*` identifiers in
+  `crates/clickhouse` and `crates/clickhouse-macros`.
+- **File size**: every `.rs`, `.cpp`, and `.h` file stays at or below 800 lines.
+- **Safety and docs**: every `unsafe` block carries `// SAFETY:`; every fallible
+  or panicking public function documents `# Errors` or `# Panics`; every
+  `unsafe fn` documents `# Safety`. Source comments, rustdoc, errors, logs, and
+  commits are English.
+- **Committed surface**: only product source, manifests, tests, examples, and
+  the root and crate READMEs are tracked; working notes remain outside the
+  repository.
+- **Rebased PRs**: features develop on dedicated branches and merge into `main`
+  through rebased pull requests.

@@ -1,3 +1,0 @@
-# Columnar Parity Across TCP and HTTP via `FORMAT Native`
-
-To guarantee that switching an `Endpoint` between `tcp://` and `http://` never degrades performance or breaks column-oriented APIs (`insert_batch`, `query_blocks`, and zero-copy `BlockView`), the HTTP `Transport` uses ClickHouse's `FORMAT Native` for block-level operations. Because `FORMAT Native` shares the exact binary column layout as the Native TCP wire protocol, `Block` encoding/decoding and `zerocopy` slice projections work identically over both transports, while `FORMAT RowBinary` and raw format streams (`ArrowStream`, etc.) remain available on HTTP for row-oriented `serde` and custom pipelines.
