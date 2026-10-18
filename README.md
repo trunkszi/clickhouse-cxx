@@ -49,7 +49,7 @@ The examples under `crates/clickhouse/examples/` form a progressive, runnable tu
 | `03_memory_policy_and_batch_reuse` | The real `clickhouse::BufferPolicy`: `default()`, `unbounded()`, `minimal()`, `allocated_bytes()`, policy-driven `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | The complete column-family tour: numeric, Bool, String/FixedString/JSON, date/time, decimals, UUID, IP, enums, Nullable, Array, LowCardinality, Tuple, Map, Geo, and Nothing. |
 | `05_dual_transport_and_row_client` | The typed `RowClient` surface (`insert_batch`, `insert_rows`, `query_rows`, `query_views`) over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map bridge columns. |
-| `06_serde_compatibility` | `SerdeBridge` for `serde`-only structs (RowBinary and `Block` conversion), `RowClient::insert_serde`/`query_serde` over an in-memory transport and Native TCP, and `#[serde(rename_all)]`, `#[serde(rename)]`, and `#[serde(with = "serde_bytes")]` support in `#[derive(Row)]`. |
+| `06_serde_compatibility` | `SerdeBridge` for `serde`-only structs (RowBinary and `Block` conversion, including `BTreeMap` map columns), `RowClient::insert_serde`/`query_serde` over an in-memory transport and Native TCP, and `#[serde(rename_all)]`, `#[serde(rename)]`, and `#[serde(with = "serde_bytes")]` support in `#[derive(Row)]`. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -71,10 +71,13 @@ cargo run -p clickhouse --example 06_serde_compatibility
   back into owned values.
 - `SerdeBridge::rows_to_block(&rows)` builds the row-layer `Block` by
   dispatching serde fields into typed ClickHouse columns. `Option` becomes
-  `Nullable`, `Vec` becomes `Array`, and `serde_bytes` payloads become binary
-  `String` columns.
+  `Nullable`, `Vec` becomes `Array`, `BTreeMap`/`HashMap` become `Map(K, V)`,
+  and `serde_bytes` payloads become binary `String` columns.
 - `SerdeBridge::block_to_rows(&block)` materializes rows from a block by
-  matching column names to serde field names.
+  matching column names to serde field names. Logical fixed columns (`Date`,
+  `Date32`, `DateTime`, `DateTime64`, `IPv4`, `Decimal32/64/128`) decode into
+  their underlying integer width, and `UUID`/`IPv6` decode into a
+  `serde_bytes` byte field.
 
 `RowClient` exposes the same bridge as `insert_serde(table, &rows)` and
 `query_serde::<T>(sql)`, so an in-memory transport and the Native TCP `Client`

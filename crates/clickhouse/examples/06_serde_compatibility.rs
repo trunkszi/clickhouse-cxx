@@ -19,9 +19,9 @@
 //!
 //! The first struct derives only `serde`. The second derives `Row` and
 //! `serde`; its serde naming attributes also define the generated column
-//! schema.
+//! schema. A `BTreeMap` field round-trips as a `Map(String, UInt64)` column.
 
-use std::env;
+use std::{collections::BTreeMap, env};
 
 use clickhouse::{Batch, Block, Client, Endpoint, Row, SerdeBridge, row::RowClient};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,7 @@ struct QuoteTick {
     ask: f64,
     venue: Option<String>,
     tags: Vec<u32>,
+    attributes: BTreeMap<String, u64>,
 }
 
 /// A row type that also derives serde.
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ask: 100.75,
             venue: Some(String::from("primary")),
             tags: vec![7, 11],
+            attributes: BTreeMap::from([(String::from("priority"), 1), (String::from("tier"), 2)]),
         },
         QuoteTick {
             instrument: String::from("ETH-USD"),
@@ -117,6 +119,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ask: 2_501.5,
             venue: None,
             tags: vec![13],
+            attributes: BTreeMap::from([(String::from("priority"), 3)]),
+        },
+        QuoteTick {
+            instrument: String::from("SOL-USD"),
+            sequence: 3,
+            bid: 140.0,
+            ask: 140.25,
+            venue: Some(String::from("secondary")),
+            tags: Vec::new(),
+            attributes: BTreeMap::new(),
         },
     ];
 
@@ -135,14 +147,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let decoded: Vec<QuoteTick> = SerdeBridge::from_rowbinary(&encoded)?;
     assert_eq!(decoded, quotes);
-    println!("RowBinary round-trip rows={}", decoded.len());
+    println!(
+        "RowBinary round-trip rows={} first map={:?} empty map={:?}",
+        decoded.len(),
+        decoded[0].attributes,
+        decoded[2].attributes
+    );
 
     // ---------------------------------------------------------------------
     // 2. Block conversion for the same serde-only struct.
     //
     // `rows_to_block` dispatches each serde field into a typed column:
-    // `Option` becomes `Nullable`, `Vec` becomes `Array`, and a
-    // `serde_bytes` payload becomes a binary `String`.
+    // `Option` becomes `Nullable`, `Vec` becomes `Array`, a map becomes
+    // `Map(K, V)`, and a `serde_bytes` payload becomes a binary `String`.
     // ---------------------------------------------------------------------
     let quote_block = SerdeBridge::rows_to_block(&quotes)?;
     print_columns("serde Block", &quote_block)?;
@@ -153,6 +170,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         quote_block.column_by_name("tags")?.type_name,
         "Array(UInt32)"
+    );
+    assert_eq!(
+        quote_block.column_by_name("attributes")?.type_name,
+        "Map(String,UInt64)"
+    );
+    println!(
+        "Map column attributes: {}",
+        quote_block.column_by_name("attributes")?.type_name
     );
     let from_block: Vec<QuoteTick> = SerdeBridge::block_to_rows(&quote_block)?;
     assert_eq!(from_block, quotes);
@@ -167,8 +192,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut memory = SerdeMemoryTransport::default();
     memory.insert_serde("lesson_serde_quote", &quotes)?;
     let memory_rows: Vec<QuoteTick> = memory.query_serde(
-        "SELECT instrument, sequence, bid, ask, venue, tags FROM lesson_serde_quote ORDER BY \
-         sequence",
+        "SELECT instrument, sequence, bid, ask, venue, tags, attributes FROM lesson_serde_quote \
+         ORDER BY sequence",
     )?;
     assert_eq!(memory_rows, quotes);
     println!("\nin-memory query_serde rows={}", memory_rows.len());
@@ -268,12 +293,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     client.execute(
         "CREATE OR REPLACE TABLE lesson_serde_quote (instrument String, sequence UInt64, bid \
-         Float64, ask Float64, venue Nullable(String), tags Array(UInt32)) ENGINE = Memory",
+         Float64, ask Float64, venue Nullable(String), tags Array(UInt32), attributes Map(String, \
+         UInt64)) ENGINE = Memory",
     )?;
     client.insert_serde("lesson_serde_quote", &quotes)?;
     let live_quotes: Vec<QuoteTick> = client.query_serde(
-        "SELECT instrument, sequence, bid, ask, venue, tags FROM lesson_serde_quote ORDER BY \
-         sequence",
+        "SELECT instrument, sequence, bid, ask, venue, tags, attributes FROM lesson_serde_quote \
+         ORDER BY sequence",
     )?;
     assert_eq!(live_quotes, quotes);
     println!("\nNative TCP query_serde rows={}", live_quotes.len());

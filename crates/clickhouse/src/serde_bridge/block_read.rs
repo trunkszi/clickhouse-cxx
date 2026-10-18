@@ -153,11 +153,24 @@ impl<'a> ValueDe<'a> {
     }
 
     fn fixed<const N: usize>(&self, expected: &'static str) -> Result<[u8; N], SerError> {
-        if &*self.column.type_name != expected {
-            return Err(self.expected(&format!("`{expected}`")));
+        self.fixed_if::<N>(expected, |name| name == expected)
+    }
+
+    /// Read a fixed-width row when the declared type is one of `accept`.
+    ///
+    /// Logical ClickHouse types share storage with a Rust scalar or byte
+    /// string, so the width is checked against the declared type rather than
+    /// the Rust type alone.
+    fn fixed_if<const N: usize>(
+        &self,
+        expected: &str,
+        accept: impl Fn(&str) -> bool,
+    ) -> Result<[u8; N], SerError> {
+        if !accept(&self.column.type_name) {
+            return Err(self.expected(expected));
         }
         let ColumnData::Fixed(data) = &self.column.data else {
-            return Err(self.expected(&format!("`{expected}`")));
+            return Err(self.expected(expected));
         };
         let start = self
             .row
@@ -175,6 +188,27 @@ impl<'a> ValueDe<'a> {
         let mut value = [0_u8; N];
         value.copy_from_slice(bytes);
         Ok(value)
+    }
+
+    /// Borrow the 16 fixed bytes of a `UUID` or `IPv6` row.
+    fn logical_bytes(&self) -> Result<&'a [u8], SerError> {
+        let expected = "`UUID` or `IPv6`";
+        let ColumnData::Fixed(data) = &self.column.data else {
+            return Err(self.expected(expected));
+        };
+        let start = self
+            .row
+            .checked_mul(16)
+            .ok_or_else(|| SerError::custom("column byte offset overflow"))?;
+        let end = start
+            .checked_add(16)
+            .ok_or_else(|| SerError::custom("column byte offset overflow"))?;
+        data.as_bytes().get(start..end).ok_or_else(|| {
+            SerError::custom(format!(
+                "column `{}` row is out of bounds",
+                self.column.name
+            ))
+        })
     }
 
     fn string_bytes(&self) -> Result<&'a [u8], SerError> {
@@ -213,15 +247,22 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_i32(i32::from_le_bytes(self.fixed("Int32")?))
+        visitor.visit_i32(i32::from_le_bytes(
+            self.fixed_if("`Int32`, `Date32`, or a 4-byte `Decimal`", is_i32_source)?,
+        ))
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_i64(i64::from_le_bytes(self.fixed("Int64")?))
+        visitor.visit_i64(i64::from_le_bytes(self.fixed_if(
+            "`Int64`, `DateTime64`, or an 8-byte `Decimal`",
+            is_i64_source,
+        )?))
     }
 
     fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_i128(i128::from_le_bytes(self.fixed("Int128")?))
+        visitor.visit_i128(i128::from_le_bytes(
+            self.fixed_if("`Int128` or a 16-byte `Decimal`", is_i128_source)?,
+        ))
     }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
@@ -229,11 +270,15 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
     }
 
     fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_u16(u16::from_le_bytes(self.fixed("UInt16")?))
+        visitor.visit_u16(u16::from_le_bytes(
+            self.fixed_if("`UInt16` or `Date`", is_u16_source)?,
+        ))
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_u32(u32::from_le_bytes(self.fixed("UInt32")?))
+        visitor.visit_u32(u32::from_le_bytes(
+            self.fixed_if("`UInt32`, `DateTime`, or `IPv4`", is_u32_source)?,
+        ))
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
@@ -269,7 +314,13 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
     }
 
     fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_borrowed_bytes(self.string_bytes()?)
+        match &self.column.data {
+            ColumnData::Fixed(_) if is_byte_logical(&self.column.type_name) => {
+                visitor.visit_borrowed_bytes(self.logical_bytes()?)
+            }
+            ColumnData::Strings { .. } => visitor.visit_borrowed_bytes(self.string_bytes()?),
+            _ => Err(self.expected("`String`, `UUID`, or `IPv6`")),
+        }
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
@@ -356,8 +407,39 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
         ))
     }
 
-    fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, SerError> {
-        Err(SerError::custom("map is not a supported column value"))
+    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
+        let ColumnData::Map {
+            offsets,
+            keys,
+            values,
+        } = &self.column.data
+        else {
+            return Err(self.expected("`Map`"));
+        };
+        let name = format!("Map({},{})", keys.type_name, values.type_name);
+        if self.column.type_name.as_ref() != name.as_str() {
+            return Err(self.expected(&format!("`{name}`")));
+        }
+        if keys.len() != values.len() {
+            return Err(SerError::custom(format!(
+                "column `{}` has unequal map key and value counts",
+                self.column.name
+            )));
+        }
+        let (start, end) = row_span(offsets, self.row)?;
+        if end > keys.len() || end > values.len() {
+            return Err(SerError::custom(format!(
+                "column `{}` map offsets exceed its keys or values",
+                self.column.name
+            )));
+        }
+        visitor.visit_map(MapPairs {
+            keys: keys.as_ref(),
+            values: values.as_ref(),
+            next: start,
+            end,
+            key_pending: false,
+        })
     }
 
     fn deserialize_struct<V: Visitor<'de>>(
@@ -417,6 +499,104 @@ impl<'de> SeqAccess<'de> for ArraySeq<'de> {
     fn size_hint(&self) -> Option<usize> {
         Some(self.end - self.next)
     }
+}
+
+struct MapPairs<'a> {
+    keys: &'a Column,
+    values: &'a Column,
+    next: usize,
+    end: usize,
+    key_pending: bool,
+}
+
+impl<'de> MapAccess<'de> for MapPairs<'de> {
+    type Error = SerError;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, SerError> {
+        if self.next >= self.end {
+            return Ok(None);
+        }
+        if self.key_pending {
+            return Err(SerError::custom("map value is missing"));
+        }
+        self.key_pending = true;
+        seed.deserialize(ValueDe {
+            column: self.keys,
+            row: self.next,
+        })
+        .map(Some)
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, SerError> {
+        if !self.key_pending {
+            return Err(SerError::custom("map value has no preceding key"));
+        }
+        self.key_pending = false;
+        let row = self.next;
+        self.next += 1;
+        seed.deserialize(ValueDe {
+            column: self.values,
+            row,
+        })
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.end - self.next)
+    }
+}
+
+/// Storage width of a ClickHouse `Decimal` type name.
+///
+/// `Decimal(P, S)` selects 4, 8, or 16 bytes from the precision; resolutions
+/// above 38 digits need the 32-byte `Decimal256` storage this bridge does not
+/// read.
+fn decimal_width(type_name: &str) -> Option<usize> {
+    if type_name == "Decimal32" || type_name.starts_with("Decimal32(") {
+        return Some(4);
+    }
+    if type_name == "Decimal64" || type_name.starts_with("Decimal64(") {
+        return Some(8);
+    }
+    if type_name == "Decimal128" || type_name.starts_with("Decimal128(") {
+        return Some(16);
+    }
+    let rest = type_name.strip_prefix("Decimal(")?;
+    let precision = rest.split(',').next()?.trim().parse::<u32>().ok()?;
+    match precision {
+        0..=9 => Some(4),
+        10..=18 => Some(8),
+        19..=38 => Some(16),
+        _ => None,
+    }
+}
+
+fn is_u16_source(type_name: &str) -> bool {
+    matches!(type_name, "UInt16" | "Date")
+}
+
+fn is_i32_source(type_name: &str) -> bool {
+    matches!(type_name, "Int32" | "Date32") || decimal_width(type_name) == Some(4)
+}
+
+fn is_u32_source(type_name: &str) -> bool {
+    matches!(type_name, "UInt32" | "DateTime" | "IPv4") || type_name.starts_with("DateTime(")
+}
+
+fn is_i64_source(type_name: &str) -> bool {
+    matches!(type_name, "Int64" | "DateTime64")
+        || type_name.starts_with("DateTime64(")
+        || decimal_width(type_name) == Some(8)
+}
+
+fn is_i128_source(type_name: &str) -> bool {
+    matches!(type_name, "Int128") || decimal_width(type_name) == Some(16)
+}
+
+fn is_byte_logical(type_name: &str) -> bool {
+    matches!(type_name, "UUID" | "IPv6")
 }
 
 fn row_span(offsets: &[u64], row: usize) -> Result<(usize, usize), SerError> {
