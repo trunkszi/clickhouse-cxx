@@ -52,11 +52,30 @@ only cold control-plane lifecycle, failover, and `OnServerLog` events; hot
 data-plane paths emit zero logs. Every dependency in this crate's manifest uses
 inline-table syntax.
 
+## Transport configuration and shared blocks
+
+`Client::new` and `ClientBuilder` validate enabled schemes before opening a
+connection. `ClientConfig::with_timeout` applies to either transport; positive
+submillisecond deadlines round up to one millisecond. HTTP accepts one endpoint
+per session and rejects Native-only TLS/socket options and custom failover
+policies. HTTP worker factories stripe independent sessions across endpoints.
+
+`insert_block`, `query_blocks`, and the typed row/serde convenience methods are
+inherent `Client` methods in both transport builds. They use the pure-Rust
+`Block`; Native interactive streaming also exposes `NativeBlock`. Native block
+callbacks stream from the socket; HTTP block callbacks run after a bounded
+response is decoded. Use `query_raw_with` for HTTP wire-chunk streaming.
+Buffered HTTP responses and their decompressed bodies are capped at 256 MiB.
+
+`try_server_info` returns the Native handshake metadata or an unsupported error
+for HTTP. Thread-local handles permit nested calls through different handles;
+reentry through the same handle returns a configuration error. Dropping a
+handle clears its cached connection on the current thread.
+
 ## Derived rows
 
 ```rust
 use clickhouse::{Batch, Client, Endpoint, Row};
-use clickhouse::row::RowClient;
 
 #[derive(Row, Default)]
 #[row(table = "events", rename_all = "snake_case")]

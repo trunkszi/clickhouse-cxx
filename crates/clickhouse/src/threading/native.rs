@@ -1,4 +1,4 @@
-//! Native clients remain local to each calling OS thread; only factory configuration is shared.
+//! Clients remain local to each calling OS thread; only factory configuration is shared.
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -108,34 +108,7 @@ impl OwnedConfig {
                 reason: "failover callbacks are per-thread state and require a plain Client".into(),
             });
         }
-        if config.endpoints.is_empty() {
-            return Err(Error::Config {
-                reason: "endpoint list is empty".into(),
-            });
-        }
-        for endpoint in &config.endpoints {
-            if endpoint.port() == 0 {
-                return Err(Error::Config {
-                    reason: "endpoint port must be nonzero".into(),
-                });
-            }
-            if endpoint.host().contains('\0') {
-                return Err(Error::Config {
-                    reason: "endpoint host contains a NUL byte".into(),
-                });
-            }
-        }
-        if let Some(timeout) = config.timeout {
-            let millis = u64::try_from(timeout.as_millis()).map_err(|_| Error::Config {
-                reason: "timeout exceeds supported milliseconds".into(),
-            })?;
-            if millis == 0 || millis > i64::MAX as u64 {
-                return Err(Error::Config {
-                    reason: "timeout must be nonzero and fit in a signed 64-bit millisecond count"
-                        .into(),
-                });
-            }
-        }
+        config.validate()?;
         Ok(Self {
             endpoints: config.endpoints.iter().map(EndpointSpec::capture).collect(),
             policy: PolicySnapshot::capture(&config.policy),
@@ -155,6 +128,10 @@ impl OwnedConfig {
         let mut endpoints = self.endpoints.clone();
         let count = endpoints.len();
         endpoints.rotate_left(rotate % count);
+        if matches!(endpoints[0].scheme, Scheme::Http | Scheme::Https) {
+            // HTTP workers stripe independent sessions; HTTP failover is unsupported.
+            endpoints.truncate(1);
+        }
         ClientConfig {
             callback: None,
             endpoints: endpoints.iter().map(EndpointSpec::restore).collect(),
@@ -200,9 +177,9 @@ fn next_id() -> u64 {
 
 thread_local! {
     /// Clients owned by the current thread, keyed by [`ThreadLocalClient`] id.
-    static THREAD_CLIENTS: RefCell<HashMap<u64, Client>> = RefCell::new(HashMap::new());
+    static THREAD_CLIENTS: RefCell<HashMap<u64, Option<Client>>> = RefCell::new(HashMap::new());
     /// Worker slots leased by the current thread, keyed by [`WorkerClient`] id.
-    static LOCAL_WORKERS: RefCell<HashMap<u64, LocalWorker>> = RefCell::new(HashMap::new());
+    static LOCAL_WORKERS: RefCell<HashMap<u64, Option<LocalWorker>>> = RefCell::new(HashMap::new());
 }
 
 /// Creates and reuses one [`Client`] per calling OS thread.
@@ -246,20 +223,17 @@ impl ThreadLocalClient {
     /// directly. Do not call [`with`] recursively on the same factory.
     ///
     /// # Errors
-    /// Returns a connection or closure error.
-    ///
-    /// # Panics
-    /// Panics when called re-entrantly for the same factory on one thread.
+    /// Returns a connection or closure error, or a configuration error for
+    /// recursion on this same handle.
     ///
     /// [`with`]: Self::with
     pub fn with<R>(&self, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
         THREAD_CLIENTS.with(|cell| {
-            let mut clients = cell.borrow_mut();
-            let client = match clients.entry(self.id) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => entry.insert(Client::new(self.config.to_config(0))?),
-            };
-            f(client)
+            let mut checked = Checkout::take(cell, self.id)?;
+            if checked.value.is_none() {
+                checked.value = Some(Client::new(self.config.to_config(0))?);
+            }
+            f(checked.value.as_mut().ok_or_else(reentrant_error)?)
         })
     }
 
@@ -465,10 +439,8 @@ impl WorkerClient {
     ///
     /// # Errors
     /// Returns [`Error::WorkerSlotsExhausted`] when every worker slot is leased
-    /// by another live thread, or a connection or closure error.
-    ///
-    /// # Panics
-    /// Panics when called re-entrantly for the same handle on one thread.
+    /// by another live thread, or a connection or closure error. Recursive calls
+    /// on the same handle return a configuration error.
     ///
     /// [`with`]: Self::with
     pub fn with<R>(&self, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
@@ -482,12 +454,10 @@ impl WorkerClient {
     ///
     /// # Errors
     /// Returns [`Error::WorkerSlotsExhausted`] when every worker slot is leased
-    /// by another live thread, or a connection or closure error.
+    /// by another live thread, or a connection or closure error. Recursive calls
+    /// on the same handle return a configuration error.
     ///
     /// [`balance`]: Self::balance
-    ///
-    /// # Panics
-    /// Panics when called re-entrantly for the same handle on one thread.
     pub fn with_keyed<R>(&self, key: u64, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
         self.with_worker(Some(key), f)
     }
@@ -498,17 +468,20 @@ impl WorkerClient {
         f: impl FnOnce(&mut Client) -> Result<R>,
     ) -> Result<R> {
         LOCAL_WORKERS.with(|cell| {
-            let mut workers = cell.borrow_mut();
-            let worker = match workers.entry(self.id) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let worker_id = self.shared.lease().ok_or(Error::WorkerSlotsExhausted {
-                        workers: self.shared.workers,
-                    })?;
-                    entry.insert(LocalWorker::new(self.shared.clone(), worker_id))
-                }
-            };
-            worker.dispatch(key, f)
+            let mut checked = Checkout::take(cell, self.id)?;
+            if checked.value.is_none() {
+                let worker_id = self.shared.lease().ok_or(Error::WorkerSlotsExhausted {
+                    workers: self.shared.workers,
+                })?;
+                checked.value = Some(LocalWorker::new(self.shared.clone(), worker_id));
+            }
+            let worker = checked.value.as_mut().ok_or_else(reentrant_error)?;
+            let result = worker.dispatch(key, f);
+            if worker.slots.iter().all(Option::is_none) {
+                // No connection was established; release the lease before returning.
+                checked.value = None;
+            }
+            result
         })
     }
 
@@ -573,3 +546,76 @@ fn hash_key(key: u64) -> u64 {
     }
     hash
 }
+
+/// A checked-out entry leaves a marker that rejects recursion on the same handle.
+struct Checkout<'a, T> {
+    cell: &'a RefCell<HashMap<u64, Option<T>>>,
+    id: u64,
+    value: Option<T>,
+}
+
+impl<'a, T> Checkout<'a, T> {
+    fn take(cell: &'a RefCell<HashMap<u64, Option<T>>>, id: u64) -> Result<Self> {
+        let value = match cell.borrow_mut().entry(id) {
+            Entry::Occupied(mut entry) => entry
+                .get_mut()
+                .take()
+                .ok_or_else(reentrant_error)
+                .map(Some)?,
+            Entry::Vacant(entry) => {
+                entry.insert(None);
+                None
+            }
+        };
+        Ok(Self { cell, id, value })
+    }
+}
+
+impl<T> Drop for Checkout<'_, T> {
+    fn drop(&mut self) {
+        let mut entries = self.cell.borrow_mut();
+        if let Some(value) = self.value.take() {
+            entries.insert(self.id, Some(value));
+        } else {
+            entries.remove(&self.id);
+        }
+    }
+}
+
+fn reentrant_error() -> Error {
+    Error::Config {
+        reason: "reentrant with() call on the same handle is not allowed".into(),
+    }
+}
+
+impl Drop for ThreadLocalClient {
+    fn drop(&mut self) {
+        match THREAD_CLIENTS.try_with(|cell| {
+            if let Ok(mut entries) = cell.try_borrow_mut() {
+                entries.remove(&self.id);
+            }
+        }) {
+            Ok(()) => {}
+            // TLS teardown already released the cached clients and their resources.
+            Err(_) => {}
+        }
+    }
+}
+
+impl Drop for WorkerClient {
+    fn drop(&mut self) {
+        match LOCAL_WORKERS.try_with(|cell| {
+            if let Ok(mut entries) = cell.try_borrow_mut() {
+                entries.remove(&self.id);
+            }
+        }) {
+            Ok(()) => {}
+            // TLS teardown already released each cached worker and its lease.
+            Err(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

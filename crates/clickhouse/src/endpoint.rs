@@ -45,7 +45,6 @@ impl std::fmt::Debug for Endpoint {
 
 impl Endpoint {
     /// Rebuild a validated endpoint for a calling-thread client factory.
-    #[cfg(feature = "tcp")]
     pub(crate) fn from_parts(scheme: Scheme, host: String, port: u16) -> Self {
         Self {
             scheme,

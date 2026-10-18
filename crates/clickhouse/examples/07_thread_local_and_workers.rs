@@ -17,9 +17,7 @@
 
 use std::{env, thread};
 
-use clickhouse::{
-    Block, Client, ClientConfig, Endpoint, NativeBlock, ThreadLocalClient, WorkerBalance,
-};
+use clickhouse::{Block, Client, ClientConfig, Endpoint, ThreadLocalClient, WorkerBalance};
 
 const DEFAULT_ADDR: &str = "tcp://127.0.0.1:9000";
 
@@ -171,22 +169,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // `query_blocks_for_each` delivers blocks without retaining a Vec;
     // `query_blocks_into` appends to storage supplied by the caller;
-    // `copy_column_into_slice` copies a fixed-width column into caller memory.
+    // Project a fixed-width column and copy its prefix into caller memory.
     // ---------------------------------------------------------------------
     let mut plain = Client::new(config(&endpoint)?)?;
-    let mut destination: Vec<NativeBlock> = Vec::new();
+    let mut destination: Vec<Block> = Vec::new();
     let appended = plain.query_blocks_into("SELECT number FROM numbers(16)", &mut destination)?;
     let mut delivered = 0;
     let callbacks = plain.query_blocks_for_each("SELECT number FROM numbers(16)", |block| {
-        delivered += block.rows();
+        delivered += block.row_count();
         Ok(())
     })?;
     let mut values = [0_u64; 4];
     let data = destination
         .iter()
-        .find(|block| block.rows() > 0)
+        .find(|block| block.row_count() > 0)
         .expect("one nonempty result block");
-    let copied = data.copy_column_into_slice(0, &mut values)?;
+    let source: &[u64] = data.column_slice(0)?;
+    let copied = source.len().min(values.len());
+    values[..copied].copy_from_slice(&source[..copied]);
     println!(
         "\nread path appended_blocks={appended} callback_blocks={callbacks} \
          callback_rows={delivered} copied={copied} values={values:?}"

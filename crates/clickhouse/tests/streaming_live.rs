@@ -10,8 +10,8 @@ use std::{
 };
 
 use clickhouse::{
-    CUSTOM, Client, CompressionMethod, Error, ExternalTable, IMPORTANT, NativeBlock, OBSOLETE,
-    Query, Row, TracingContext,
+    Block, CUSTOM, Client, CompressionMethod, Error, ExternalTable, IMPORTANT, NativeBlock,
+    OBSOLETE, Query, Row, TracingContext,
 };
 use support::TestClickHouseContainer;
 
@@ -21,13 +21,21 @@ fn block(values: &[u64]) -> NativeBlock {
     block
 }
 
-fn values(blocks: &[NativeBlock], column: usize) -> Vec<u64> {
+fn native_values(blocks: &[NativeBlock], column: usize) -> Vec<u64> {
     blocks
         .iter()
         .flat_map(|block| {
             let name = block.column_name(column);
             block.column_slice::<u64>(&name).unwrap().iter().copied()
         })
+        .collect()
+}
+
+/// Read the selected UInt64 column from shared facade result blocks.
+fn values(blocks: &[Block], column: usize) -> Vec<u64> {
+    blocks
+        .iter()
+        .flat_map(|block| block.column_slice::<u64>(column).unwrap().iter().copied())
         .collect()
 }
 
@@ -157,7 +165,7 @@ fn scenario_external_join_and_early_cancel() {
         .with_id("external-join")
         .with_setting("max_block_size", "2", IMPORTANT);
     let result = client.select_with_external_data(query, &tables).unwrap();
-    assert_eq!(values(&result, 0), [2, 4]);
+    assert_eq!(native_values(&result, 0), [2, 4]);
     let mut seen = 0;
     client
         .select_with_external_data_cancelable(
@@ -338,24 +346,18 @@ fn read_paths_deliver_into_caller_storage() {
         .query_blocks_into("SELECT number FROM numbers(1000)", &mut destination)
         .unwrap();
     assert_eq!(appended, destination.len());
-    let rows: usize = destination.iter().map(NativeBlock::rows).sum();
+    let rows: usize = destination.iter().map(Block::row_count).sum();
     assert_eq!(rows, 1000, "caller storage receives every row");
     let first: Vec<u64> = destination
         .iter()
-        .flat_map(|block| {
-            block
-                .column_slice::<u64>(&block.column_name(0))
-                .unwrap()
-                .iter()
-                .copied()
-        })
+        .flat_map(|block| block.column_slice::<u64>(0).unwrap().iter().copied())
         .collect();
     assert_eq!(first.len(), 1000);
 
     let mut delivered = 0;
     let callbacks = client
         .query_blocks_for_each("SELECT number FROM numbers(1000)", |block| {
-            delivered += block.rows();
+            delivered += block.row_count();
             Ok(())
         })
         .unwrap();
@@ -376,7 +378,9 @@ fn copy_column_into_slice_uses_caller_memory() {
     let server = TestClickHouseContainer::start();
     let mut client = server.client(CompressionMethod::None);
     let blocks = client
-        .query_blocks("SELECT toUInt64(number) AS id FROM numbers(5)")
+        .select_stream("SELECT toUInt64(number) AS id FROM numbers(5)")
+        .unwrap()
+        .collect::<clickhouse::Result<Vec<_>>>()
         .unwrap();
     let block = blocks
         .iter()

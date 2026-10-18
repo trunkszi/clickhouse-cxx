@@ -190,6 +190,27 @@ impl<'a> TlsSettings<'a> {
 
     #[cfg(feature = "tcp")]
     pub(crate) fn timeout_ms(duration: Duration) -> u64 {
-        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        if duration.is_zero() {
+            0
+        } else {
+            u64::try_from(duration.as_millis().max(1)).unwrap_or(u64::MAX)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "tcp"))]
+mod tests {
+    use std::time::Duration;
+
+    use super::TlsSettings;
+
+    #[test]
+    fn unit_positive_deadline_keeps_bound() {
+        assert_eq!(TlsSettings::timeout_ms(Duration::ZERO), 0);
+        for nanos in [1, 500_000, 999_999, 1_000_000] {
+            assert_eq!(TlsSettings::timeout_ms(Duration::from_nanos(nanos)), 1);
+        }
+        assert_eq!(TlsSettings::timeout_ms(Duration::from_millis(25)), 25);
+        assert_eq!(TlsSettings::timeout_ms(Duration::MAX), u64::MAX);
     }
 }

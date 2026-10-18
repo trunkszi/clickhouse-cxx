@@ -106,8 +106,8 @@ pub enum Error {
     #[error("invalid request: {0}")]
     Invalid(Cow<'static, str>),
     /// The server returned its structured exception packet.
-    #[error("server exception {0:?}")]
-    Server(ServerException),
+    #[error("server exception {0}")]
+    Server(#[source] ServerException),
     /// Upstream interactive inserts do not accept query event handlers.
     #[error("interactive inserts do not support query event callbacks")]
     InsertEventCallbacks,
@@ -124,6 +124,7 @@ pub enum Error {
     #[error("session cleanup failed: {operation}; recovery failed: {recovery}")]
     Cleanup {
         /// Original cancellation or reset failure.
+        #[source]
         operation: Box<Error>,
         /// Subsequent recovery failure.
         recovery: Box<Error>,

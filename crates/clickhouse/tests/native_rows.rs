@@ -3,7 +3,7 @@
 #[path = "support/docker.rs"]
 mod docker;
 
-use clickhouse::{BufferPolicy, Client, Endpoint, Row, row::RowClient};
+use clickhouse::{BufferPolicy, Client, Endpoint, Row};
 
 #[derive(Row)]
 #[row(table = "native_events")]

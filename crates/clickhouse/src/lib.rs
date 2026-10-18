@@ -38,9 +38,7 @@ mod wire_error;
 
 pub use batch::Batch;
 pub use block::Block;
-pub use client::Client;
-#[cfg(feature = "tcp")]
-pub use client::ClientBuilder;
+pub use client::{Client, ClientBuilder};
 pub use column::*;
 pub use endpoint::{Endpoint, Scheme};
 pub use error::{Error, Result};
@@ -56,9 +54,7 @@ pub use row::{BlockView, Row};
 pub use serde_bridge::SerdeBridge;
 #[cfg(feature = "tcp")]
 pub use streaming::{BlockStream, Inserter};
-pub use threading::WorkerBalance;
-#[cfg(feature = "tcp")]
-pub use threading::{ThreadLocalClient, WorkerClient};
+pub use threading::{ThreadLocalClient, WorkerBalance, WorkerClient};
 #[cfg(feature = "tcp")]
 pub use wire_block::WireBlock;
 #[cfg(feature = "tcp")]
@@ -82,10 +78,12 @@ pub mod inserter;
 #[cfg(feature = "http")]
 pub mod stream;
 #[cfg(feature = "http")]
-pub mod transport;
+pub(crate) mod transport;
 pub(crate) mod type_layout;
 pub(crate) mod varint;
 #[cfg(feature = "http")]
 pub use inserter::HttpInserter;
 #[cfg(feature = "http")]
 pub use stream::HttpBlockStream;
+#[cfg(feature = "http")]
+pub use transport::HttpPreferences;

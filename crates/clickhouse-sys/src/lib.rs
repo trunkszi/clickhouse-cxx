@@ -225,6 +225,11 @@ pub mod ffi {
         fn send_insert_block(client: Pin<&mut Client>, block: &Block) -> Result<()>;
         /// Finish the active insert statement.
         fn end_insert(client: Pin<&mut Client>) -> Result<()>;
+        /// Take structured server details from a failed interactive INSERT operation.
+        fn take_insert_exception(client: Pin<&mut Client>) -> UniquePtr<NativeEvent>;
+        /// Insert a complete block while retaining typed server rejection details.
+        fn insert_block_checked(client: Pin<&mut Client>, table: &str, block: &Block)
+        -> Result<()>;
         /// Whether the server still expects insert blocks.
         fn is_inserting(client: &Client) -> bool;
         /// Register one named in-memory table for the next select.

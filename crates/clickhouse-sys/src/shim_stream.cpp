@@ -1,11 +1,13 @@
 #include "shim.h"
 
 #include "clickhouse-sys/src/lib.rs.h"
+#include "clickhouse/exceptions.h"
 
 #include <chrono>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace chcxx {
 
@@ -141,16 +143,57 @@ void cancel(Client& client, std::uint8_t* context, EventCallback callback) {
 
 bool is_selecting(const Client& client) { return client.inner().IsSelecting(); }
 
+// Preserve server exception fields across cxx's string-only exception boundary.
+static void remember_insert_exception(Client& client, const clickhouse::ServerException& error) {
+    client.insert_exception = std::make_unique<NativeEvent>();
+    client.insert_exception->kind = 5;
+    client.insert_exception->exception = error.GetException();
+}
+
+void insert_block_checked(Client& client, rust::Str table, const Block& block) {
+    client.insert_exception.reset();
+    try {
+        insert_block(client, table, block);
+    } catch (const clickhouse::ServerException& error) {
+        remember_insert_exception(client, error);
+        throw;
+    }
+}
+
 std::unique_ptr<Block> begin_insert(Client& client, const NativeQuery& query) {
-    auto block = client.inner().BeginInsert(query.value);
-    return std::make_unique<Block>(block);
+    client.insert_exception.reset();
+    try {
+        auto block = client.inner().BeginInsert(query.value);
+        return std::make_unique<Block>(block);
+    } catch (const clickhouse::ServerException& error) {
+        remember_insert_exception(client, error);
+        throw;
+    }
 }
 
 void send_insert_block(Client& client, const Block& block) {
-    client.inner().SendInsertBlock(block.inner());
+    client.insert_exception.reset();
+    try {
+        client.inner().SendInsertBlock(block.inner());
+    } catch (const clickhouse::ServerException& error) {
+        remember_insert_exception(client, error);
+        throw;
+    }
 }
 
-void end_insert(Client& client) { client.inner().EndInsert(); }
+void end_insert(Client& client) {
+    client.insert_exception.reset();
+    try {
+        client.inner().EndInsert();
+    } catch (const clickhouse::ServerException& error) {
+        remember_insert_exception(client, error);
+        throw;
+    }
+}
+
+std::unique_ptr<NativeEvent> take_insert_exception(Client& client) {
+    return std::move(client.insert_exception);
+}
 
 bool is_inserting(const Client& client) { return client.inner().IsInserting(); }
 
