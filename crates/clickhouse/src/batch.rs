@@ -1,5 +1,5 @@
 //! Reusable column-oriented write buffers.
-use crate::{Block, Result, Row};
+use crate::{Block, BlockView, Result, Row};
 /// A reusable SoA buffer for one derived row schema.
 pub trait Batch: Default {
     type Row: Row;
@@ -24,6 +24,8 @@ pub trait Batch: Default {
     fn shrink_to_fit(&mut self);
     /// Copy a borrowed row once into reusable column buffers.
     fn push(&mut self, row: &Self::Row);
+    /// Append a borrowed row projection without constructing an owned row.
+    fn push_ref<'a>(&mut self, row: <<Self::Row as Row>::View<'a> as BlockView<'a>>::Ref);
     fn extend_from_slice(&mut self, rows: &[Self::Row]) {
         for row in rows {
             self.push(row);

@@ -302,10 +302,15 @@ impl NativeBlock {
     /// match `T`, or the byte buffer is not a valid `T` slice.
     pub fn column_slice<T: FixedColumn>(&self, name: &str) -> Result<&[T], Error> {
         let index = self.column_index(name)?;
+        self.column_slice_at(index)
+    }
+
+    /// Project a validated column index without materializing its name.
+    fn column_slice_at<T: FixedColumn>(&self, index: usize) -> Result<&[T], Error> {
         let kind = sys::ffi::block_column_kind(&self.inner, index);
         if kind != T::KIND {
             return Err(Error::block(format!(
-                "column `{name}` has kind {kind}, expected {}",
+                "column index {index} has kind {kind}, expected {}",
                 T::KIND
             )));
         }
@@ -317,13 +322,83 @@ impl NativeBlock {
         let required = std::mem::align_of::<T>();
         if !address.is_multiple_of(required) {
             return Err(Error::block(format!(
-                "column `{name}` data pointer 0x{address:x} is not {required}-byte aligned (kind \
-                 {kind}, bytes {})",
+                "column index {index} data pointer 0x{address:x} is not {required}-byte aligned \
+                 (kind {kind}, bytes {})",
                 bytes.len()
             )));
         }
         <[T]>::ref_from_bytes(bytes)
-            .map_err(|error| Error::block(format!("column `{name}` cast failed: {error:?}")))
+            .map_err(|error| Error::block(format!("column index {index} cast failed: {error:?}")))
+    }
+
+    /// Copy a fixed-width column into a caller-provided slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the index is out of range, the column kind
+    /// does not match `T`, or `dst` is smaller than the column.
+    pub fn read_into_slice<T: FixedColumn + Copy>(
+        &self,
+        col_idx: usize,
+        dst: &mut [T],
+    ) -> Result<usize, Error> {
+        if col_idx >= self.columns() {
+            return Err(Error::block(format!(
+                "column index {col_idx} is out of range ({} columns)",
+                self.columns()
+            )));
+        }
+        let src = self.column_slice_at::<T>(col_idx)?;
+        if dst.len() < src.len() {
+            return Err(Error::block(format!(
+                "destination slice for column index {col_idx} has {} elements, needs {}",
+                dst.len(),
+                src.len()
+            )));
+        }
+        dst[..src.len()].copy_from_slice(src);
+        Ok(src.len())
+    }
+
+    /// Copy one String/FixedString row into a caller-provided byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the column or row is out of range, the
+    /// column is not a byte string, or the native handle is missing.
+    pub fn read_bytes_into(
+        &self,
+        col_idx: usize,
+        row_idx: usize,
+        dst: &mut Vec<u8>,
+    ) -> Result<usize, Error> {
+        if col_idx >= self.columns() {
+            return Err(Error::block(format!(
+                "column index {col_idx} is out of range ({} columns)",
+                self.columns()
+            )));
+        }
+        if row_idx >= self.rows() {
+            return Err(Error::block(format!(
+                "row index {row_idx} is out of range ({} rows)",
+                self.rows()
+            )));
+        }
+        let name = self.column_name(col_idx);
+        let kind = self.column_kind(col_idx);
+        if kind != 11 && kind != 12 {
+            return Err(Error::block(format!(
+                "column `{name}` is not a String or FixedString column"
+            )));
+        }
+        let handle = self.wire_column(col_idx);
+        let handle = handle
+            .as_ref()
+            .ok_or_else(|| Error::block(format!("column `{name}` handle is null")))?;
+        let bytes = handle.string_at(row_idx);
+        dst.clear();
+        dst.extend_from_slice(bytes);
+        Ok(bytes.len())
     }
 
     /// Materialize a `String` column.

@@ -18,8 +18,48 @@ pub(crate) fn block_to_rows<T: serde::de::DeserializeOwned>(
     block: &Block,
 ) -> Result<Vec<T>, Error> {
     let mut rows = Vec::with_capacity(block.row_count());
+    block_to_rows_into(block, &mut rows)?;
+    Ok(rows)
+}
+
+pub(crate) fn block_to_rows_with<T, F>(block: &Block, mut on_row: F) -> Result<usize, Error>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut(T) -> Result<(), Error>,
+{
+    let mut count = 0;
     for row in 0..block.row_count() {
-        rows.push(T::deserialize(&mut RowDe { block, row })?);
+        let value = T::deserialize(&mut RowDe { block, row })?;
+        on_row(value)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+pub(crate) fn block_to_rows_into<T: serde::de::DeserializeOwned>(
+    block: &Block,
+    dst: &mut Vec<T>,
+) -> Result<usize, Error> {
+    block_to_rows_with(block, |row| {
+        dst.push(row);
+        Ok(())
+    })
+}
+
+pub(crate) fn block_to_rows_into_slice<T: serde::de::DeserializeOwned>(
+    block: &Block,
+    dst: &mut [T],
+) -> Result<usize, Error> {
+    let rows = block.row_count();
+    if rows > dst.len() {
+        return Err(SerError::custom(format!(
+            "block has {rows} rows but the destination slice capacity is {}",
+            dst.len()
+        ))
+        .into());
+    }
+    for (row, slot) in dst.iter_mut().take(rows).enumerate() {
+        *slot = T::deserialize(&mut RowDe { block, row })?;
     }
     Ok(rows)
 }

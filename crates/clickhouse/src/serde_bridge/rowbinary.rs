@@ -46,17 +46,67 @@ pub(crate) fn to_rowbinary<T: Serialize>(
 pub(crate) fn from_rowbinary<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> Result<Vec<T>, Error> {
-    let mut input = bytes;
     let mut rows = Vec::new();
+    from_rowbinary_into(bytes, &mut rows)?;
+    Ok(rows)
+}
+
+pub(crate) fn from_rowbinary_with<T, F>(bytes: &[u8], mut on_row: F) -> Result<usize, Error>
+where
+    T: serde::de::DeserializeOwned,
+    F: FnMut(T) -> Result<(), Error>,
+{
+    let mut input = bytes;
+    let mut count = 0;
     while !input.is_empty() {
         let mut decoder = Decoder {
             input,
             in_row: false,
         };
-        rows.push(T::deserialize(&mut decoder)?);
+        let row = T::deserialize(&mut decoder)?;
         input = decoder.input;
+        on_row(row)?;
+        count += 1;
     }
-    Ok(rows)
+    Ok(count)
+}
+
+pub(crate) fn from_rowbinary_into<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    dst: &mut Vec<T>,
+) -> Result<usize, Error> {
+    from_rowbinary_with(bytes, |row| {
+        dst.push(row);
+        Ok(())
+    })
+}
+
+pub(crate) fn from_rowbinary_into_slice<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    dst: &mut [T],
+) -> Result<usize, Error> {
+    let mut input = bytes;
+    let mut count = 0;
+    while !input.is_empty() {
+        if count == dst.len() {
+            return Err(SerError::custom(format!(
+                "RowBinary input has more rows than the destination slice capacity of {}",
+                dst.len()
+            ))
+            .into());
+        }
+        let mut decoder = Decoder {
+            input,
+            in_row: false,
+        };
+        let row = T::deserialize(&mut decoder)?;
+        input = decoder.input;
+        // The slot is initialized by the caller; overwriting it drops the old
+        // value and keeps the write path free of temporary storage.
+        dst[count] = row;
+        count += 1;
+    }
+    Ok(count)
 }
 
 impl Serializer for &mut Writer<'_> {

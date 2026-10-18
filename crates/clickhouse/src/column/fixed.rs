@@ -464,6 +464,25 @@ impl FixedWireColumn {
         <[T]>::ref_from_bytes(bytes).map_err(|_| WireError::Alignment)
     }
 
+    /// Copy the column into a caller-provided slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the column kind does not match `T` or `dst` is
+    /// smaller than the column.
+    pub fn read_into_slice<T: FixedType>(&self, dst: &mut [T]) -> WireResult<usize> {
+        let src = self.as_slice::<T>()?;
+        if dst.len() < src.len() {
+            return Err(WireError::Unsupported(format!(
+                "destination slice has {} elements, needs {}",
+                dst.len(),
+                src.len()
+            )));
+        }
+        dst[..src.len()].copy_from_slice(src);
+        Ok(src.len())
+    }
+
     /// Copy the column into an aligned Rust vector.
     ///
     /// # Errors

@@ -154,6 +154,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         decoded[2].attributes
     );
 
+    // Callback decoding hands each owned row to the caller and never builds an
+    // intermediate result vector.
+    let mut streamed = Vec::new();
+    let streamed_count = SerdeBridge::from_rowbinary_with(&encoded, |row: QuoteTick| {
+        streamed.push(row);
+        Ok(())
+    })?;
+    assert_eq!(streamed, quotes);
+
+    // A caller-provided slice is overwritten from index zero; the caller owns
+    // the storage and can reuse it for the next response.
+    let mut slice = vec![quotes[0].clone(); quotes.len()];
+    let slice_count = SerdeBridge::from_rowbinary_into_slice(&encoded, &mut slice)?;
+    assert_eq!(slice, quotes);
+    println!("RowBinary callback rows={streamed_count} caller slice rows={slice_count}");
+
     // ---------------------------------------------------------------------
     // 2. Block conversion for the same serde-only struct.
     //
@@ -183,6 +199,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(from_block, quotes);
     println!("Block round-trip rows={}", from_block.len());
 
+    // The same block drives a callback read and a caller-buffer read.
+    let mut block_streamed = Vec::new();
+    let block_streamed_count = SerdeBridge::block_to_rows_with(&quote_block, |row: QuoteTick| {
+        block_streamed.push(row);
+        Ok(())
+    })?;
+    let mut block_slice = vec![quotes[0].clone(); quotes.len()];
+    let block_slice_count = SerdeBridge::block_to_rows_into_slice(&quote_block, &mut block_slice)?;
+    assert_eq!(block_streamed, quotes);
+    assert_eq!(block_slice, quotes);
+    println!("Block callback rows={block_streamed_count} caller slice rows={block_slice_count}");
+
     // ---------------------------------------------------------------------
     // 3. The shared `RowClient` surface over an in-memory transport.
     //
@@ -191,12 +219,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------------------------------------------------------------
     let mut memory = SerdeMemoryTransport::default();
     memory.insert_serde("lesson_serde_quote", &quotes)?;
-    let memory_rows: Vec<QuoteTick> = memory.query_serde(
-        "SELECT instrument, sequence, bid, ask, venue, tags, attributes FROM lesson_serde_quote \
-         ORDER BY sequence",
-    )?;
+    let quote_sql = "SELECT instrument, sequence, bid, ask, venue, tags, attributes FROM \
+                     lesson_serde_quote ORDER BY sequence";
+    let memory_rows: Vec<QuoteTick> = memory.query_serde(quote_sql)?;
     assert_eq!(memory_rows, quotes);
     println!("\nin-memory query_serde rows={}", memory_rows.len());
+
+    // `query_serde_for_each` streams owned rows; `query_serde_into_slice`
+    // writes them into storage the caller already owns.
+    let mut memory_streamed = Vec::new();
+    let memory_streamed_count = memory.query_serde_for_each::<QuoteTick, _>(quote_sql, |row| {
+        memory_streamed.push(row);
+        Ok(())
+    })?;
+    let mut memory_slice = vec![quotes[0].clone(); quotes.len()];
+    let memory_slice_count = memory.query_serde_into_slice(quote_sql, &mut memory_slice)?;
+    assert_eq!(memory_streamed, quotes);
+    assert_eq!(memory_slice, quotes);
+    println!(
+        "in-memory query_serde_for_each rows={memory_streamed_count} query_serde_into_slice \
+         rows={memory_slice_count}"
+    );
 
     // ---------------------------------------------------------------------
     // 4. `#[derive(Row)]` and serde on the same struct.
@@ -297,12 +340,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          UInt64)) ENGINE = Memory",
     )?;
     client.insert_serde("lesson_serde_quote", &quotes)?;
-    let live_quotes: Vec<QuoteTick> = client.query_serde(
-        "SELECT instrument, sequence, bid, ask, venue, tags, attributes FROM lesson_serde_quote \
-         ORDER BY sequence",
-    )?;
+    let live_quotes: Vec<QuoteTick> = client.query_serde(quote_sql)?;
     assert_eq!(live_quotes, quotes);
     println!("\nNative TCP query_serde rows={}", live_quotes.len());
+
+    let mut live_streamed = Vec::new();
+    let live_streamed_count = client.query_serde_for_each::<QuoteTick, _>(quote_sql, |row| {
+        live_streamed.push(row);
+        Ok(())
+    })?;
+    let mut live_slice = vec![quotes[0].clone(); quotes.len()];
+    let live_slice_count = client.query_serde_into_slice(quote_sql, &mut live_slice)?;
+    assert_eq!(live_streamed, quotes);
+    assert_eq!(live_slice, quotes);
+    println!(
+        "Native TCP query_serde_for_each rows={live_streamed_count} query_serde_into_slice \
+         rows={live_slice_count}"
+    );
     client.execute("DROP TABLE lesson_serde_quote")?;
 
     client.execute(

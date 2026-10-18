@@ -8,8 +8,9 @@
 //! ```
 //!
 //! The example needs no server. It covers the row attributes, the generated
-//! `Batch`, `BlockView`, and `Ref` types, and the borrowed field shapes used by
-//! the Native TCP transport.
+//! `Batch`, `BlockView`, and `Ref` types, the borrowed field shapes used by
+//! the Native TCP transport, and `RowClient` callback and caller-buffer reads
+//! over an in-memory transport.
 
 // The `eventId` field intentionally exercises `rename_all = "snake_case"`.
 // The generated `LessonEventRef` keeps the Rust field spelling, so the allow
@@ -18,7 +19,10 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-use clickhouse::{Row, row::MapRef};
+use clickhouse::{
+    Batch, Block, Row,
+    row::{MapRef, RowClient},
+};
 
 #[derive(Row)]
 #[row(table = "lesson_events", rename_all = "snake_case")]
@@ -38,6 +42,113 @@ struct LessonEvent<'input> {
 }
 
 static PAYLOAD: &[u8] = &[0, 255, 7];
+
+/// An owned row type used by the `RowClient` buffer demonstration.
+#[derive(Debug, Clone, PartialEq, Row)]
+struct FillEvent {
+    id: u64,
+    kind: String,
+    score: f64,
+}
+
+/// A minimal synchronous transport: `insert_block` and `query_blocks` are the
+/// only required `RowClient` primitives.
+#[derive(Default)]
+struct FillMemoryClient {
+    rows: Vec<FillEvent>,
+}
+
+impl RowClient for FillMemoryClient {
+    fn insert_block(&mut self, _table: &str, _block: &Block) -> clickhouse::Result<()> {
+        Ok(())
+    }
+
+    fn query_blocks(&mut self, _sql: &str) -> clickhouse::Result<Vec<Block>> {
+        let mut batch = FillEventBatch::with_capacity(self.rows.len());
+        batch.extend_from_slice(&self.rows);
+        Ok(vec![batch.to_block()?])
+    }
+}
+
+/// Callback reads and caller-owned buffer reads over the same query result.
+fn demonstrate_row_client() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = FillMemoryClient {
+        rows: vec![
+            FillEvent {
+                id: 1,
+                kind: String::from("alpha"),
+                score: 0.5,
+            },
+            FillEvent {
+                id: 2,
+                kind: String::from("beta"),
+                score: 1.5,
+            },
+            FillEvent {
+                id: 3,
+                kind: String::from("gamma"),
+                score: 2.5,
+            },
+        ],
+    };
+    let sql = "SELECT id, kind, score FROM fill_events";
+
+    // Borrowed references die with each backing block. The callback must copy
+    // anything it keeps.
+    let mut kinds = Vec::new();
+    let refs = client.query_row_refs::<FillEvent, _>(sql, |row| {
+        kinds.push(row.kind.to_owned());
+        Ok(())
+    })?;
+
+    // Owned rows are untouched by the transport's next block.
+    let mut streamed = Vec::new();
+    let owned = client.query_for_each::<FillEvent, _>(sql, |row| {
+        streamed.push(row);
+        Ok(())
+    })?;
+
+    // The caller owns these buffers; the client only overwrites their slots.
+    let placeholder = FillEvent {
+        id: 0,
+        kind: String::new(),
+        score: 0.0,
+    };
+    let mut slice = vec![placeholder; client.rows.len()];
+    let filled = client.query_rows_into_slice(sql, &mut slice)?;
+
+    let mut batch = FillEventBatch::with_capacity(client.rows.len());
+    let batched = client.query_batch_into::<FillEvent>(sql, &mut batch)?;
+
+    let mut block = Block::new();
+    let blocked = client.query_block_into::<FillEvent>(sql, &mut block)?;
+    let view = FillEventBlockView::try_from_block(&block)?;
+
+    assert_eq!(&streamed, &client.rows);
+    assert_eq!(slice, client.rows);
+    assert_eq!(batch.len(), client.rows.len());
+    assert_eq!(view.len(), client.rows.len());
+
+    println!("  query_row_refs       calls={refs} kinds={kinds:?}");
+    println!(
+        "  query_for_each       calls={owned} rows={}",
+        streamed.len()
+    );
+    println!(
+        "  query_rows_into_slice count={filled} slots={}",
+        slice.len()
+    );
+    println!(
+        "  query_batch_into     count={batched} rows={}",
+        batch.len()
+    );
+    println!(
+        "  query_block_into     count={blocked} rows={} first={:?}",
+        block.row_count(),
+        view.get(0).map(|row| row.kind)
+    );
+    Ok(())
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("table metadata");
@@ -121,6 +232,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         restored.len(),
         restored.eventId.capacity()
     );
+
+    // ---------------------------------------------------------------------
+    // 4. Callback reads and caller-owned buffers through `RowClient`.
+    //
+    // `query_row_refs` lends each borrowed row for the duration of the
+    // callback; `query_for_each` yields owned rows. The `_into` methods write
+    // into storage the caller already owns, so steady-state reads can reuse
+    // one slice, batch, or block.
+    // ---------------------------------------------------------------------
+    println!("\nRowClient callback and caller-buffer reads");
+    demonstrate_row_client()?;
 
     Ok(())
 }

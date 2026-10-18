@@ -25,7 +25,7 @@ fn type_name(block: &Block, name: &str) -> String {
 // Maps
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct BTreeRow {
     attributes: BTreeMap<String, u64>,
 }
@@ -368,4 +368,63 @@ fn writing_scalars_does_not_infer_logical_types() {
 
     let block = SerdeBridge::rows_to_block(&[WriteStamp { stamp: 1 }]).expect("build block");
     assert_eq!(type_name(&block, "stamp"), "UInt32");
+}
+
+// ---------------------------------------------------------------------------
+// Callback and caller-buffer reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn map_rows_roundtrip_through_callback_and_caller_buffer_reads() {
+    let rows = vec![
+        BTreeRow {
+            attributes: BTreeMap::from([(String::from("venue"), 7)]),
+        },
+        BTreeRow {
+            attributes: BTreeMap::new(),
+        },
+    ];
+    let (_, bytes) = SerdeBridge::to_rowbinary(&rows).expect("encode rows");
+    let block = SerdeBridge::rows_to_block(&rows).expect("build block");
+
+    let mut from_bytes = Vec::new();
+    let count = SerdeBridge::from_rowbinary_with(&bytes, |row: BTreeRow| {
+        from_bytes.push(row);
+        Ok(())
+    })
+    .expect("callback rows");
+    assert_eq!(count, rows.len());
+    assert_eq!(from_bytes, rows);
+
+    let mut appended: Vec<BTreeRow> = Vec::new();
+    assert_eq!(
+        SerdeBridge::block_to_rows_into(&block, &mut appended).expect("append block rows"),
+        rows.len()
+    );
+    assert_eq!(appended, rows);
+
+    let mut filled = vec![
+        BTreeRow {
+            attributes: BTreeMap::new(),
+        };
+        rows.len()
+    ];
+    assert_eq!(
+        SerdeBridge::block_to_rows_into_slice(&block, &mut filled).expect("fill block slice"),
+        rows.len()
+    );
+    assert_eq!(filled, rows);
+
+    // The caller-buffer write path accepts an input that exactly fills it.
+    let mut exact = vec![
+        BTreeRow {
+            attributes: BTreeMap::new(),
+        };
+        rows.len()
+    ];
+    assert_eq!(
+        SerdeBridge::from_rowbinary_into_slice(&bytes, &mut exact).expect("fill RowBinary slice"),
+        rows.len()
+    );
+    assert_eq!(exact, rows);
 }

@@ -597,3 +597,6 @@ fn truncated_and_overflowing_length_prefixes_are_rejected() {
         0x05, b'a'
     ])));
 }
+
+#[path = "serde_edge_tests/read_buffers.rs"]
+mod read_buffers;
