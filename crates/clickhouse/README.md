@@ -28,9 +28,22 @@ zero-copy block views, a serde bridge, and explicit buffer reuse.
 | Tracing | add `"tracing"` | unchanged | unchanged |
 
 ```toml
+# Native TCP/TCPS
 clickhouse = { path = "crates/clickhouse" }
+```
+
+```toml
+# HTTP/2 only; clickhouse-sys is not compiled
 clickhouse = { path = "crates/clickhouse", default-features = false, features = ["http"] }
+```
+
+```toml
+# Both transports
 clickhouse = { path = "crates/clickhouse", features = ["tcp", "http"] }
+```
+
+```toml
+# Cold control-plane telemetry
 clickhouse = { path = "crates/clickhouse", features = ["tracing"] }
 ```
 
