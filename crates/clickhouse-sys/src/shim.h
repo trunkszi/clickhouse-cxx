@@ -47,6 +47,7 @@ public:
     // select call. A deque keeps earlier elements at a stable address when a
     // later add_external grows the store.
     std::deque<std::string> external_names;
+    std::unique_ptr<NativeEvent> insert_exception;
     bool emit(const NativeEvent& event);
 
 private:
@@ -160,6 +161,8 @@ bool is_selecting(const Client& client);
 std::unique_ptr<Block> begin_insert(Client& client, const NativeQuery& query);
 void send_insert_block(Client& client, const Block& block);
 void end_insert(Client& client);
+std::unique_ptr<NativeEvent> take_insert_exception(Client& client);
+void insert_block_checked(Client& client, rust::Str table, const Block& block);
 bool is_inserting(const Client& client);
 void add_external(Client& client, rust::Str name, const Block& block);
 void select_external(Client& client, NativeQuery& query, uint8_t mask, uint8_t* context,

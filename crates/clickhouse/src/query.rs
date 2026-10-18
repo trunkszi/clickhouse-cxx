@@ -1,21 +1,12 @@
 //! Borrowed query metadata and synchronous server event handlers.
 
-use std::{borrow::Cow, collections::BTreeMap, marker::PhantomData};
+use std::{borrow::Cow, cell::RefCell, collections::BTreeMap, marker::PhantomData, rc::Rc};
 
 #[cfg(feature = "tcp")]
 use crate::NativeBlock;
 
-/// HTTP body compression negotiated with `Content-Encoding` and `Accept-Encoding`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Compression {
-    /// Send and receive uncompressed bytes.
-    #[default]
-    None,
-    /// LZ4 frame compression.
-    Lz4,
-    /// Zstd frame compression.
-    Zstd,
-}
+/// Compression shared by Native blocks and HTTP request bodies.
+pub type Compression = CompressionMethod;
 
 /// Which HTTP version the curl transport asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,7 +115,7 @@ pub enum CompressionMethod {
 }
 
 /// Information obtained during the server handshake.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
     /// Server product name.
     pub name: String,
@@ -151,10 +142,10 @@ pub struct ExternalTable<'a> {
     pub data: &'a NativeBlock,
 }
 
-type ValueHandler<'a, T> = Box<dyn FnMut(T) + 'a>;
+type ValueHandler<'a, T> = Rc<dyn Fn(T) + 'a>;
 #[cfg(feature = "tcp")]
-type BlockHandler<'a> = Box<dyn FnMut(&NativeBlock) + 'a>;
-type ExceptionHandler<'a> = Box<dyn FnMut(&ServerException) + 'a>;
+type BlockHandler<'a> = Rc<dyn Fn(&NativeBlock) + 'a>;
+type ExceptionHandler<'a> = Rc<dyn Fn(&ServerException) + 'a>;
 
 /// A synchronous request retaining borrowed text and scoped callbacks.
 ///
@@ -192,6 +183,53 @@ impl<'a> Query<'a> {
         'a: 'b,
     {
         self
+    }
+
+    /// Borrow metadata and share thread-local handlers for one synchronous execution.
+    pub(crate) fn reborrow(&self) -> Query<'_> {
+        Query {
+            sql: Cow::Borrowed(&self.sql),
+            query_id: Cow::Borrowed(&self.query_id),
+            settings: self
+                .settings
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        Cow::Borrowed(key.as_ref()),
+                        QuerySettingsField {
+                            value: Cow::Borrowed(value.value.as_ref()),
+                            flags: value.flags,
+                        },
+                    )
+                })
+                .collect(),
+            params: self
+                .params
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        Cow::Borrowed(key.as_ref()),
+                        value.as_deref().map(Cow::Borrowed),
+                    )
+                })
+                .collect(),
+            tracing_context: self.tracing_context.as_ref().map(|value| TracingContext {
+                trace_id: value.trace_id,
+                span_id: value.span_id,
+                tracestate: Cow::Borrowed(value.tracestate.as_ref()),
+                trace_flags: value.trace_flags,
+            }),
+            on_progress: self.on_progress.as_ref().map(Rc::clone),
+            on_profile: self.on_profile.as_ref().map(Rc::clone),
+            #[cfg(feature = "tcp")]
+            on_profile_events: self.on_profile_events.as_ref().map(Rc::clone),
+            #[cfg(feature = "tcp")]
+            on_server_log: self.on_server_log.as_ref().map(Rc::clone),
+            on_exception: self.on_exception.as_ref().map(Rc::clone),
+            deduplication_token: self.deduplication_token.as_deref().map(Cow::Borrowed),
+            compression: self.compression,
+            _not_send: PhantomData,
+        }
     }
 
     /// Create a query; string literals and borrowed SQL do not allocate.
@@ -262,33 +300,38 @@ impl<'a> Query<'a> {
 
     /// Receive server progress while the caller advances the query.
     pub fn on_progress(mut self, callback: impl FnMut(Progress) + 'a) -> Self {
-        self.on_progress = Some(Box::new(callback));
+        let callback = RefCell::new(callback);
+        self.on_progress = Some(Rc::new(move |value| (callback.borrow_mut())(value)));
         self
     }
 
     /// Receive the server's result profile.
     pub fn on_profile(mut self, callback: impl FnMut(Profile) + 'a) -> Self {
-        self.on_profile = Some(Box::new(callback));
+        let callback = RefCell::new(callback);
+        self.on_profile = Some(Rc::new(move |value| (callback.borrow_mut())(value)));
         self
     }
 
     /// Receive profile event tables without projecting or copying their columns.
     #[cfg(feature = "tcp")]
     pub fn on_profile_events(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
-        self.on_profile_events = Some(Box::new(callback));
+        let callback = RefCell::new(callback);
+        self.on_profile_events = Some(Rc::new(move |value| (callback.borrow_mut())(value)));
         self
     }
 
     /// Receive structured server log tables.
     #[cfg(feature = "tcp")]
     pub fn on_server_log(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
-        self.on_server_log = Some(Box::new(callback));
+        let callback = RefCell::new(callback);
+        self.on_server_log = Some(Rc::new(move |value| (callback.borrow_mut())(value)));
         self
     }
 
     /// Observe a server exception before it is returned as an error.
     pub fn on_exception(mut self, callback: impl FnMut(&ServerException) + 'a) -> Self {
-        self.on_exception = Some(Box::new(callback));
+        let callback = RefCell::new(callback);
+        self.on_exception = Some(Rc::new(move |value| (callback.borrow_mut())(value)));
         self
     }
 
@@ -354,3 +397,15 @@ impl From<String> for Query<'_> {
         Self::new(sql)
     }
 }
+
+impl std::fmt::Display for ServerException {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} ({}): {}",
+            self.name, self.code, self.display_text
+        )
+    }
+}
+
+impl std::error::Error for ServerException {}

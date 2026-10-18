@@ -27,7 +27,9 @@ use crate::{
     query::{Compression, HttpVersionChoice, Query},
 };
 
+mod headers;
 mod streaming;
+use headers::{MAX_RESPONSE_BYTES, ResponseHeaders};
 
 /// HTTP options the transport applies to every call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +56,7 @@ pub(crate) struct HttpTransport {
     user: String,
     password: String,
     version: HttpVersionChoice,
+    timeout: Duration,
     loop_: EventLoop,
     negotiated: Option<HttpVersionChoice>,
     owner_thread: PhantomData<Rc<()>>,
@@ -97,10 +100,20 @@ impl HttpTransport {
             user: user.to_owned(),
             password: password.to_owned(),
             version,
+            timeout: Duration::from_secs(60),
             loop_,
             negotiated: None,
             owner_thread: PhantomData,
         })
+    }
+
+    /// Set a positive deadline without rounding sub-millisecond values to zero.
+    pub(crate) fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = if timeout.is_zero() {
+            timeout
+        } else {
+            Duration::from_millis(timeout.as_millis().max(1).min(u128::from(u64::MAX)) as u64)
+        };
     }
 
     /// Return the configured connection-reuse and protocol preferences.
@@ -146,15 +159,9 @@ impl HttpTransport {
         let (payload, encoding) = compress_body(compression, body)?;
         let url = self.url(database, query, sql, dedup, compression)?;
         let headers = self.headers(encoding, compression);
-        let (status, encoded, response_encoding) =
-            self.transfer(&url, &headers, payload.as_ref())?;
-        let decoded = decompress_body(response_encoding, &encoded)?;
-        if !(200..300).contains(&status) {
-            return Err(Error::Http {
-                status,
-                message: lossy_text(&decoded),
-            });
-        }
+        let (encoded, metadata) = self.transfer(&url, &headers, payload.as_ref())?;
+        let decoded = decompress_body(metadata.encoding.clone(), &encoded)?;
+        metadata.check(&decoded)?;
         Ok(decoded)
     }
 
@@ -233,8 +240,8 @@ impl HttpTransport {
         easy.fresh_connect(false).map_err(Error::curl)?;
         easy.post(true).map_err(Error::curl)?;
         easy.post_fields_copy(body).map_err(Error::curl)?;
-        easy.timeout(Duration::from_secs(60)).map_err(Error::curl)?;
-        easy.connect_timeout(Duration::from_secs(10))
+        easy.timeout(self.timeout).map_err(Error::curl)?;
+        easy.connect_timeout(self.timeout.min(Duration::from_secs(10)))
             .map_err(Error::curl)?;
         let mut list = List::new();
         for header in headers {
@@ -250,42 +257,34 @@ impl HttpTransport {
         url: &str,
         headers: &[String],
         body: &[u8],
-    ) -> Result<(u32, Vec<u8>, String), Error> {
+    ) -> Result<(Vec<u8>, ResponseHeaders), Error> {
         let mut easy = self.configured_easy(url, headers, body)?;
 
         self.negotiated = None;
-        let negotiated = Rc::new(RefCell::new(None));
         let payload = Rc::new(RefCell::new(Vec::new()));
-        let encoding = Rc::new(RefCell::new(String::new()));
+        let metadata = Rc::new(RefCell::new(ResponseHeaders::default()));
         let status = Rc::new(RefCell::new(0_u32));
         let failure = Rc::new(RefCell::new(None));
+        let overflow = Rc::new(std::cell::Cell::new(false));
         {
             let payload = Rc::clone(&payload);
+            let overflow = Rc::clone(&overflow);
             easy.write_function(move |data| {
-                payload.borrow_mut().extend_from_slice(data);
+                let mut payload = payload.borrow_mut();
+                if data.len() > MAX_RESPONSE_BYTES.saturating_sub(payload.len()) {
+                    overflow.set(true);
+                    return Ok(0);
+                }
+                payload.extend_from_slice(data);
                 Ok(data.len())
             })
             .map_err(Error::curl)?;
         }
         {
-            let encoding = Rc::clone(&encoding);
-            let negotiated = Rc::clone(&negotiated);
+            let metadata = Rc::clone(&metadata);
             let requested = self.version;
             easy.header_function(move |line| {
-                if line.starts_with(b"HTTP/") {
-                    encoding.borrow_mut().clear();
-                }
-                note_encoding(line, &encoding);
-                if line.starts_with(b"HTTP/2 ") {
-                    *negotiated.borrow_mut() =
-                        Some(if requested == HttpVersionChoice::Http2PriorKnowledge {
-                            requested
-                        } else {
-                            HttpVersionChoice::Http2Tls
-                        });
-                } else if line.starts_with(b"HTTP/1.") {
-                    *negotiated.borrow_mut() = Some(HttpVersionChoice::Http1);
-                }
+                metadata.borrow_mut().observe(line, requested);
                 true
             })
             .map_err(Error::curl)?;
@@ -306,15 +305,16 @@ impl HttpTransport {
             })
             .map_err(|error| Error::curl(error.error))?;
         self.loop_.run().map_err(Error::curl)?;
+        if overflow.get() {
+            return Err(Error::protocol("HTTP response exceeds 256 MiB limit"));
+        }
         if let Some(error) = failure.borrow_mut().take() {
             return Err(Error::Curl(error));
         }
-        self.negotiated = *negotiated.borrow();
-        Ok((
-            *status.borrow(),
-            std::mem::take(&mut *payload.borrow_mut()),
-            std::mem::take(&mut *encoding.borrow_mut()),
-        ))
+        let mut metadata = std::mem::take(&mut *metadata.borrow_mut());
+        metadata.status = *status.borrow();
+        self.negotiated = metadata.negotiated;
+        Ok((std::mem::take(&mut *payload.borrow_mut()), metadata))
     }
 }
 
@@ -379,17 +379,6 @@ fn percent_encode(value: &str) -> String {
     out
 }
 
-fn note_encoding(line: &[u8], slot: &Rc<RefCell<String>>) {
-    let text = String::from_utf8_lossy(line);
-    let text = text.trim();
-    let Some((name, value)) = text.split_once(':') else {
-        return;
-    };
-    if name.eq_ignore_ascii_case("content-encoding") {
-        *slot.borrow_mut() = value.trim().to_owned();
-    }
-}
-
 fn compress_body(
     compression: Compression,
     body: &[u8],
@@ -415,21 +404,33 @@ fn compress_body(
 }
 
 fn decompress_body(encoding: String, body: &[u8]) -> Result<Vec<u8>, Error> {
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(Error::protocol("HTTP response exceeds 256 MiB limit"));
+    }
     if body.is_empty() || encoding.is_empty() || encoding.eq_ignore_ascii_case("identity") {
         return Ok(body.to_vec());
     }
     if encoding.eq_ignore_ascii_case("lz4") {
-        let mut decoder = lz4_flex::frame::FrameDecoder::new(body);
-        let mut out = Vec::new();
-        decoder.read_to_end(&mut out)?;
-        return Ok(out);
+        return read_bounded(lz4_flex::frame::FrameDecoder::new(body), MAX_RESPONSE_BYTES);
     }
     if encoding.eq_ignore_ascii_case("zstd") {
-        return Ok(zstd::stream::decode_all(body)?);
+        return read_bounded(zstd::stream::read::Decoder::new(body)?, MAX_RESPONSE_BYTES);
     }
     Err(Error::protocol(format!(
         "unsupported HTTP content encoding: {encoding}"
     )))
+}
+
+/// Stop decompression before a small compressed frame can expand without bounds.
+fn read_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::new();
+    reader.take((limit + 1) as u64).read_to_end(&mut out)?;
+    if out.len() > limit {
+        return Err(Error::protocol(
+            "decoded HTTP response exceeds 256 MiB limit",
+        ));
+    }
+    Ok(out)
 }
 
 fn lossy_text(body: &[u8]) -> String {
@@ -447,9 +448,7 @@ fn lossy_text(body: &[u8]) -> String {
 
 #[cfg(test)]
 mod unit {
-    use std::{cell::RefCell, rc::Rc};
-
-    use super::{compress_body, decompress_body, lossy_text, note_encoding};
+    use super::{compress_body, decompress_body, lossy_text};
     use crate::query::Compression;
 
     #[test]
@@ -473,12 +472,50 @@ mod unit {
         assert!(body.starts_with(&diagnostic));
     }
 
+    /// Bounded decoding rejects expansion beyond its limit, including exact EOF edges.
     #[test]
-    fn encoding_headers_ignore_case_and_whitespace() {
-        let encoding = Rc::new(RefCell::new(String::new()));
-        note_encoding(b"cOnTeNt-EnCoDiNg: zstd\r\n", &encoding);
-        assert_eq!(&*encoding.borrow(), "zstd");
-        note_encoding(b"Content-Type: application/octet-stream\r\n", &encoding);
-        assert_eq!(&*encoding.borrow(), "zstd");
+    fn decoded_body_limit_rejects_expansion() {
+        let body = vec![b'x'; 4096];
+        let encoded = zstd::stream::encode_all(body.as_slice(), 0).unwrap();
+        let decoder = zstd::stream::read::Decoder::new(encoded.as_slice()).unwrap();
+        assert!(super::read_bounded(decoder, 4095).is_err());
+        let decoder = zstd::stream::read::Decoder::new(encoded.as_slice()).unwrap();
+        assert_eq!(super::read_bounded(decoder, 4096).unwrap(), body);
+    }
+
+    /// A positive fractional-millisecond timeout cannot become an unlimited deadline.
+    #[test]
+    fn positive_submillisecond_deadline_rounds_up() {
+        let mut transport = super::HttpTransport::open(
+            crate::endpoint::Scheme::Http,
+            "127.0.0.1",
+            1,
+            "default",
+            "",
+            crate::HttpVersionChoice::Http1,
+        )
+        .unwrap();
+        transport.set_timeout(std::time::Duration::from_micros(500));
+        assert_eq!(transport.timeout, std::time::Duration::from_millis(1));
+    }
+
+    #[test]
+    fn interim_headers_reset_exception_and_encoding() {
+        let mut headers = super::ResponseHeaders::default();
+        headers.observe(
+            b"HTTP/1.1 100 Continue\r\n",
+            crate::HttpVersionChoice::Http1,
+        );
+        headers.observe(
+            b"X-ClickHouse-Exception-Code: 42\r\n",
+            crate::HttpVersionChoice::Http1,
+        );
+        headers.observe(
+            b"Content-Encoding: zstd\r\n",
+            crate::HttpVersionChoice::Http1,
+        );
+        headers.observe(b"HTTP/1.1 200 OK\r\n", crate::HttpVersionChoice::Http1);
+        assert!(headers.check(b"healthy").is_ok());
+        assert!(headers.encoding.is_empty());
     }
 }

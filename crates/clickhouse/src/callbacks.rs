@@ -135,7 +135,7 @@ pub(crate) fn event_mask(query: &Query<'_>) -> u8 {
 
 pub(crate) fn native_query(query: &Query<'_>) -> cxx::UniquePtr<ffi::NativeQuery> {
     let mut native = ffi::new_query(&query.sql, &query.query_id);
-    for (key, field) in &query.settings {
+    for (key, field) in query.settings() {
         ffi::set_setting(native.pin_mut(), key, &field.value, field.flags);
     }
     for (key, value) in &query.params {

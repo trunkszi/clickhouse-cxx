@@ -118,6 +118,14 @@ impl EndpointHealth {
     pub(crate) fn available(&self, now: Instant) -> bool {
         !self.circuit_open || self.retry_at.is_some_and(|deadline| now >= deadline)
     }
+    /// Record a completed handshake without forgiving failed application operations.
+    #[cfg(feature = "tcp")]
+    pub(crate) fn connected(&mut self, elapsed: Duration) {
+        self.latency = Some(elapsed);
+        if self.failures == 0 {
+            self.success(elapsed);
+        }
+    }
     pub(crate) fn success(&mut self, elapsed: Duration) {
         self.healthy = true;
         self.failures = 0;
@@ -147,4 +155,43 @@ pub struct FailoverEvent<'a> {
     pub old_endpoint: std::borrow::Cow<'a, str>,
     /// Destination endpoint address.
     pub new_endpoint: std::borrow::Cow<'a, str>,
+}
+
+#[cfg(all(test, feature = "tcp"))]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{EndpointHealth, FailoverPolicy};
+
+    #[test]
+    fn unit_handshake_keeps_failure_streak() {
+        let policy = FailoverPolicy::new().with_circuit(3, Duration::from_secs(60));
+        let mut health = EndpointHealth::new(0);
+        for expected in 1..=3 {
+            health.failure(policy, String::from("stream socket disconnected"));
+            health.connected(Duration::from_millis(1));
+            assert_eq!(health.failures, expected);
+        }
+        assert!(health.circuit_open);
+        assert!(!health.available(Instant::now()));
+        health.success(Duration::from_millis(2));
+        assert_eq!(health.failures, 0);
+        assert!(health.available(Instant::now()));
+        assert!(health.last_error.is_none());
+    }
+
+    #[test]
+    fn unit_half_open_requires_operation_success() {
+        let policy = FailoverPolicy::new().with_circuit(1, Duration::ZERO);
+        let mut health = EndpointHealth::new(0);
+        health.failure(policy, String::from("transport failed"));
+        assert!(health.available(Instant::now()));
+        health.connected(Duration::from_millis(1));
+        assert!(health.circuit_open);
+        assert_eq!(health.failures, 1);
+        health.failure(policy, String::from("stream failed after handshake"));
+        assert_eq!(health.failures, 2);
+        health.success(Duration::from_millis(2));
+        assert!(!health.circuit_open);
+    }
 }

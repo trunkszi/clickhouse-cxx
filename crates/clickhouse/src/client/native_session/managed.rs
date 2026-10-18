@@ -56,8 +56,10 @@ impl NativeSession {
         };
         let inner = managed.dial(false)?;
         crate::telemetry::control_log!("Native connection ready");
+        let server_info = super::read_server_info(&inner);
         Ok(Self {
             inner,
+            server_info,
             managed,
             usable: true,
             cleanup_error: None,
@@ -81,8 +83,12 @@ impl NativeSession {
     /// Returns a connection error if every eligible endpoint fails.
     pub fn reset_connection_endpoint(&mut self) -> Result<(), Error> {
         self.managed.needs_probe = true;
-        self.inner = self.managed.dial(true)?;
+        let inner = self.managed.dial(true)?;
+        self.server_info = super::read_server_info(&inner);
+        self.inner = inner;
         self.managed.needs_probe = false;
+        self.usable = true;
+        self.cleanup_error = None;
         Ok(())
     }
     /// Read accumulated health and circuit diagnostics without probing or clearing them.
@@ -128,6 +134,19 @@ impl NativeSession {
     pub fn take_callback_error(&mut self) -> Option<Error> {
         self.managed.callback_error.take()
     }
+    /// Account for a transport failure before selecting a recovery endpoint.
+    pub(super) fn record_transport_failure(&mut self, error: &Error) {
+        self.managed.needs_probe = true;
+        self.managed.health[self.managed.current].failure(self.managed.policy, error.to_string());
+    }
+
+    /// A complete successful application operation closes the failure streak.
+    pub(crate) fn operation_succeeded(&mut self) {
+        let health = &mut self.managed.health[self.managed.current];
+        health.success(health.latency.unwrap_or_default());
+        self.managed.needs_probe = false;
+    }
+
     pub(super) fn operation_error(&mut self, error: cxx::Exception) -> Error {
         self.managed.needs_probe = true;
         self.managed.health[self.managed.current].failure(self.managed.policy, error.to_string());
@@ -150,13 +169,15 @@ impl NativeSession {
             let started = Instant::now();
             match sys::ffi::ping(self.inner.pin_mut()) {
                 Ok(()) => {
-                    self.managed.health[self.managed.current].success(started.elapsed());
+                    self.managed.health[self.managed.current].connected(started.elapsed());
                     self.managed.needs_probe = false;
                 }
                 Err(error) => {
                     self.managed.health[self.managed.current]
                         .failure(self.managed.policy, error.to_string());
-                    self.inner = self.managed.dial(true)?;
+                    let inner = self.managed.dial(true)?;
+                    self.server_info = super::read_server_info(&inner);
+                    self.inner = inner;
                     self.managed.needs_probe = false;
                 }
             }
@@ -202,7 +223,7 @@ impl Managed {
                 let started = Instant::now();
                 match sys::new_native_client(&self.options[index]) {
                     Ok(connection) => {
-                        self.health[index].success(started.elapsed());
+                        self.health[index].connected(started.elapsed());
                         self.transition(index);
                         return Ok(connection);
                     }
@@ -289,4 +310,24 @@ fn random_seed() -> u64 {
     RandomState::new()
         .hash_one("clickhouse endpoint selection")
         .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::options;
+    use crate::{ClientConfig, Endpoint};
+
+    #[test]
+    fn unit_submillisecond_timeout_options() {
+        let endpoint = Endpoint::parse("tcp://127.0.0.1:9000").expect("valid endpoint");
+        let config = ClientConfig::from_endpoints(vec![endpoint.clone()])
+            .expect("valid configuration")
+            .with_timeout(Duration::from_micros(500));
+        let native = options(&endpoint, &config);
+        assert_eq!(native.connect_timeout_ms, 1);
+        assert_eq!(native.recv_timeout_ms, 1);
+        assert_eq!(native.send_timeout_ms, 1);
+    }
 }

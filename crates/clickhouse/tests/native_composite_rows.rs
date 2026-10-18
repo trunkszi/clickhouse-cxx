@@ -5,10 +5,7 @@ mod docker;
 
 use std::collections::BTreeMap;
 
-use clickhouse::{
-    Client, Endpoint, Row,
-    row::{MapRef, RowClient},
-};
+use clickhouse::{Client, Endpoint, Row, row::MapRef};
 
 #[derive(Row)]
 #[row(table = "native_composite_events")]

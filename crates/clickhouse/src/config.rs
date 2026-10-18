@@ -1,4 +1,4 @@
-//! Native endpoint credentials, security, and failover configuration.
+//! Transport endpoint credentials, security, and failover configuration.
 use std::{borrow::Cow, time::Duration};
 
 use crate::{
@@ -41,7 +41,7 @@ impl Default for ClientConfig<'static> {
 }
 
 impl<'a> ClientConfig<'a> {
-    /// Parse Native TCP or TCPS endpoint addresses.
+    /// Parse TCP, TCPS, HTTP, or HTTPS endpoint addresses.
     /// # Errors
     /// Returns an endpoint error when any address is invalid.
     pub fn parse(text: &str) -> Result<Self, Error> {
@@ -69,6 +69,49 @@ impl<'a> ClientConfig<'a> {
             workers: 1,
             balance: WorkerBalance::RoundRobin,
         })
+    }
+    /// Validate endpoint features and representable, nonzero deadlines.
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.endpoints.is_empty() {
+            return Err(Error::Config {
+                reason: "endpoint list is empty".into(),
+            });
+        }
+        let native = matches!(
+            self.endpoints[0].scheme(),
+            crate::Scheme::Tcp | crate::Scheme::Tcps
+        );
+        for endpoint in &self.endpoints {
+            if matches!(endpoint.scheme(), crate::Scheme::Tcp | crate::Scheme::Tcps) != native {
+                return Err(Error::Config {
+                    reason: "cross-transport failover is unsupported; use homogeneous endpoints"
+                        .into(),
+                });
+            }
+            let enabled = match endpoint.scheme() {
+                crate::Scheme::Tcp | crate::Scheme::Tcps => cfg!(feature = "tcp"),
+                crate::Scheme::Http | crate::Scheme::Https => cfg!(feature = "http"),
+            };
+            if !enabled {
+                return Err(Error::unsupported(
+                    "requested endpoint transport feature is disabled",
+                ));
+            }
+            if endpoint.port() == 0 || endpoint.host().contains('\0') {
+                return Err(Error::Config {
+                    reason: "endpoint host or port is invalid".into(),
+                });
+            }
+        }
+        if let Some(timeout) = self.timeout
+            && (timeout.is_zero() || timeout.as_millis().max(1) > i64::MAX as u128)
+        {
+            return Err(Error::Config {
+                reason: "timeout must be nonzero and fit in a signed 64-bit millisecond count"
+                    .into(),
+            });
+        }
+        Ok(())
     }
     /// Observe endpoint transitions, including initial connection failover.
     #[must_use]

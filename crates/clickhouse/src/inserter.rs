@@ -50,6 +50,10 @@ impl<'a> HttpInserter<'a> {
         if self.bytes.is_empty() {
             return Ok(());
         }
-        self.client.insert_native_payload(&self.table, &self.bytes)
+        self.client.insert_native_payload(
+            &self.table,
+            &self.bytes,
+            self.schema.as_deref().unwrap_or(&[]),
+        )
     }
 }

@@ -53,7 +53,7 @@ impl Client {
     /// Native endpoints, unsupported metadata, malformed IPC, and transport failures return errors.
     pub fn query_arrow_stream(&mut self, query: &Query<'_>) -> Result<Vec<ArrowBlockView>> {
         self.require_http_format()?;
-        let sql = ensure_format(query.sql(), "ArrowStream");
+        let sql = ensure_format(query.sql(), "ArrowStream")?;
         let bytes = self.http_call(query, &sql, &[])?;
         ArrowBlockView::decode_stream(&bytes)
     }

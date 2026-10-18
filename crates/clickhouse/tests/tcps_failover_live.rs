@@ -8,8 +8,8 @@ use std::{
 };
 
 use clickhouse::{
-    ArrayColumn, Client, ClientConfig, EndpointSelection, FailoverPolicy, NativeBlock, TlsSettings,
-    WireColumn,
+    ArrayColumn, Block, Client, ClientConfig, EndpointSelection, FailoverPolicy, NativeBlock,
+    TlsSettings, WireColumn,
 };
 #[path = "support/tcps_server.rs"]
 mod tcps_server;
@@ -139,20 +139,20 @@ fn native_block_roundtrip(server: &Server) -> Result<(), String> {
         .push_wire_column("tags", &WireColumn::Array(Box::new(tags)))
         .map_err(|e| e.to_string())?;
     client
-        .insert_block("tls_roundtrip", &mut block)
+        .insert_block("tls_roundtrip", &Block::from_native(&block).unwrap())
         .map_err(|e| e.to_string())?;
     let blocks = client
         .query_blocks("SELECT id,delta,price,symbol FROM tls_roundtrip ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let rows: usize = blocks.iter().map(NativeBlock::rows).sum();
+    let rows: usize = blocks.iter().map(Block::row_count).sum();
     if rows != 3 {
         return Err(format!("TLS block roundtrip returned {rows} rows"));
     }
     let ids: Vec<u64> = blocks
         .iter()
-        .filter(|b| b.rows() != 0)
+        .filter(|b| b.row_count() != 0)
         .flat_map(|b| {
-            b.column_slice::<u64>("id")
+            b.column_slice_by_name::<u64>("id")
                 .expect("UInt64 projection")
                 .iter()
                 .copied()

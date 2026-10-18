@@ -44,8 +44,8 @@ impl BlockStream<'_> {
         };
         self.active = false;
         let result = frame.finish(result);
-        if result.is_err() {
-            self.client.recover();
+        if let Err(error) = &result {
+            self.client.recover(error);
         }
         result
     }
@@ -71,12 +71,13 @@ impl Iterator for BlockStream<'_> {
         match frame.finish(result) {
             Ok(inner) if inner.is_null() => {
                 self.active = false;
+                self.client.operation_succeeded();
                 None
             }
             Ok(inner) => Some(Ok(NativeBlock::from_inner(inner))),
             Err(error) => {
                 self.active = false;
-                self.client.recover();
+                self.client.recover(&error);
                 Some(Err(error))
             }
         }
@@ -136,8 +137,9 @@ impl Inserter<'_> {
         }
         if let Err(error) = ffi::send_insert_block(self.client.inner.pin_mut(), block.inner()) {
             self.active = false;
-            self.client.recover();
-            return Err(error.into());
+            let error = self.client.insert_error(error);
+            self.client.recover(&error);
+            return Err(error);
         }
         Ok(())
     }
@@ -159,12 +161,16 @@ impl Inserter<'_> {
         if !self.active {
             return Err(Error::Invalid("insert session is closed".into()));
         }
-        let result = ffi::end_insert(self.client.inner.pin_mut());
+        let result = ffi::end_insert(self.client.inner.pin_mut())
+            .map_err(|error| self.client.insert_error(error));
         self.active = false;
-        if result.is_err() {
-            self.client.recover();
+        if let Err(error) = &result {
+            self.client.recover(error);
         }
-        result.map_err(Error::from)
+        if result.is_ok() {
+            self.client.operation_succeeded();
+        }
+        result
     }
 }
 

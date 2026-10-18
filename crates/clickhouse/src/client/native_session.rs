@@ -17,6 +17,7 @@ use crate::{
 pub(crate) struct NativeSession {
     pub(crate) inner: UniquePtr<sys::ffi::Client>,
     managed: Managed,
+    server_info: ServerInfo,
     usable: bool,
     cleanup_error: Option<Error>,
     /// The native client owns sockets and blocks that must stay on one thread.
@@ -70,6 +71,7 @@ impl NativeSession {
         self.usable = false;
         match self.managed.dial(true) {
             Ok(inner) => {
+                self.server_info = read_server_info(&inner);
                 self.inner = inner;
                 self.usable = true;
                 self.cleanup_error = None;
@@ -90,10 +92,15 @@ impl NativeSession {
         self.usable
     }
 
-    pub(crate) fn recover(&mut self) {
+    /// Reconnect without replaying a failed request or counting application rejections.
+    pub(crate) fn recover(&mut self, error: &Error) {
+        if matches!(error, Error::Native { .. } | Error::Io(_)) {
+            self.record_transport_failure(error);
+        }
         self.usable = false;
         match self.managed.dial(true) {
             Ok(inner) => {
+                self.server_info = read_server_info(&inner);
                 self.inner = inner;
                 self.usable = true;
             }
@@ -111,18 +118,32 @@ impl NativeSession {
         });
     }
 
+    /// Recover structured INSERT rejections before inspecting transport circuit state.
+    pub(crate) fn insert_error(&mut self, error: cxx::Exception) -> Error {
+        let event = sys::ffi::take_insert_exception(self.inner.pin_mut());
+        if event.is_null() {
+            return Error::from(error);
+        }
+        let fields = sys::ffi::event_exception(&event);
+        Error::Server(crate::ServerException {
+            code: fields.code,
+            name: fields.name,
+            display_text: fields.display_text,
+            stack_trace: fields.stack_trace,
+        })
+    }
+
     /// Inspect handshake information from the connected server.
     pub fn get_server_info(&self) -> ServerInfo {
-        let info = sys::ffi::get_server_info(&self.inner);
-        ServerInfo {
-            name: info.name,
-            timezone: info.timezone,
-            display_name: info.display_name,
-            version_major: info.version_major,
-            version_minor: info.version_minor,
-            version_patch: info.version_patch,
-            revision: info.revision,
-        }
+        self.server_info.clone()
+    }
+
+    /// Borrow metadata from the latest successful Native handshake.
+    /// # Errors
+    /// Returns a poisoned-connection error if recovery did not establish a session.
+    pub(crate) fn try_server_info(&self) -> Result<&ServerInfo> {
+        self.ready()?;
+        Ok(&self.server_info)
     }
 
     /// Handshake information from the connected server.
@@ -145,9 +166,10 @@ impl NativeSession {
     /// # Errors
     /// Returns request, server, callback, or connection errors; failures reset the connection.
     pub fn select_stream<'a>(&'a mut self, query: impl Into<Query<'a>>) -> Result<BlockStream<'a>> {
+        let mut query = query.into();
+        validate_query(&query)?;
         self.ready()?;
         self.prepare()?;
-        let mut query = query.into();
         let mut native = callbacks::native_query(&query);
         let mask = callbacks::event_mask(&query);
         let mut frame = Frame::new(&mut query, None);
@@ -163,7 +185,7 @@ impl NativeSession {
             )
         };
         if let Err(error) = frame.finish(result) {
-            self.recover();
+            self.recover(&error);
             return Err(error);
         }
         Ok(BlockStream {
@@ -231,36 +253,26 @@ impl NativeSession {
         Ok(delivered)
     }
 
-    /// Append each result block to caller-supplied storage.
-    ///
-    /// Returns the number of blocks appended.
-    ///
-    /// # Errors
-    /// Returns any query, server, or connection error.
-    pub fn query_blocks_into<'a>(
-        &mut self,
-        query: impl Into<Query<'a>>,
-        dst: &mut Vec<NativeBlock>,
-    ) -> Result<usize> {
-        let mut appended = 0;
-        for block in self.select_stream(query.into().shorten())? {
-            dst.push(block?);
-            appended += 1;
-        }
-        Ok(appended)
-    }
-
     /// Insert one block into a table.
     ///
     /// # Errors
-    /// Returns [`Error::Native`] when the server rejects the insert.
+    /// Returns structured server rejections or transport failures; failed sessions are reset.
     pub fn insert_block(&mut self, table: &str, block: &mut NativeBlock) -> Result<()> {
         self.ready()?;
         self.prepare()?;
         control_log!("insert table={table} rows={}", block.rows());
         block.refresh()?;
-        sys::ffi::insert_block(self.inner.pin_mut(), table, block.inner())
-            .map_err(|error| self.operation_error(error))
+        match sys::ffi::insert_block_checked(self.inner.pin_mut(), table, block.inner()) {
+            Ok(()) => {
+                self.operation_succeeded();
+                Ok(())
+            }
+            Err(error) => {
+                let error = self.insert_error(error);
+                self.recover(&error);
+                Err(error)
+            }
+        }
     }
 
     /// Stop a select when the callback returns false, canceling and draining it.
@@ -332,6 +344,7 @@ impl NativeSession {
             ));
         }
         let mut query = query.into();
+        validate_query(&query)?;
         let mut native = callbacks::native_query(&query);
         let mask = callbacks::event_mask(&query);
         sys::ffi::clear_external(self.inner.pin_mut());
@@ -352,8 +365,10 @@ impl NativeSession {
         };
         sys::ffi::clear_external(self.inner.pin_mut());
         let result = frame.finish(result);
-        if result.is_err() {
-            self.recover();
+        if let Err(error) = &result {
+            self.recover(error);
+        } else {
+            self.operation_succeeded();
         }
         result
     }
@@ -364,9 +379,10 @@ impl NativeSession {
     /// Event handlers are rejected before sending; schema and connection errors reset the
     /// connection.
     pub fn inserter<'a>(&'a mut self, query: impl Into<Query<'a>>) -> Result<Inserter<'a>> {
+        let query = query.into();
+        validate_query(&query)?;
         self.ready()?;
         self.prepare()?;
-        let query = query.into();
         if query.has_event_callbacks() {
             return Err(Error::InsertEventCallbacks);
         }
@@ -379,8 +395,9 @@ impl NativeSession {
                 _not_send: PhantomData,
             }),
             Err(error) => {
-                self.recover();
-                Err(error.into())
+                let error = self.insert_error(error);
+                self.recover(&error);
+                Err(error)
             }
         }
     }
@@ -388,3 +405,28 @@ impl NativeSession {
 
 mod managed;
 use managed::Managed;
+
+/// Copy authenticated metadata while its Native connection is alive.
+fn read_server_info(inner: &UniquePtr<sys::ffi::Client>) -> ServerInfo {
+    let info = sys::ffi::get_server_info(inner);
+    ServerInfo {
+        name: info.name,
+        timezone: info.timezone,
+        display_name: info.display_name,
+        version_major: info.version_major,
+        version_minor: info.version_minor,
+        version_patch: info.version_patch,
+        revision: info.revision,
+    }
+}
+
+/// Reject HTTP-only per-request options instead of discarding them on Native transport.
+fn validate_query(query: &Query<'_>) -> Result<()> {
+    if query.compression_override().is_some() || query.deduplication_token_value().is_some() {
+        return Err(Error::unsupported(
+            "per-query compression and deduplication tokens require an HTTP endpoint; configure \
+             Native compression on ClientConfig and deduplication with query settings",
+        ));
+    }
+    Ok(())
+}

@@ -1,4 +1,4 @@
-//! In-thread connection balancing and Native calling-thread client factories.
+//! In-thread connection balancing and calling-thread client factories.
 
 /// Strategy used to choose a local connection slot inside one thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -16,7 +16,5 @@ pub enum WorkerBalance {
     KeyHash,
 }
 
-#[cfg(feature = "tcp")]
 mod native;
-#[cfg(feature = "tcp")]
 pub use native::{ThreadLocalClient, WorkerClient};

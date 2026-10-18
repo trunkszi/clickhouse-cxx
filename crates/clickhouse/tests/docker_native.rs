@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clickhouse::{Client, Endpoint, NativeBlock};
+use clickhouse::{Block, Client, Endpoint, NativeBlock};
 
 const IMAGE: &str = "clickhouse/clickhouse-server:26.8.2.7";
 
@@ -139,7 +139,7 @@ fn native_tcp_tracer_bullet() {
     block.push_string("symbol", &symbols).expect("push column");
 
     client
-        .insert_block("chcxx_t01", &mut block)
+        .insert_block("chcxx_t01", &Block::from_native(&block).unwrap())
         .expect("insert block");
 
     let blocks = client
@@ -150,13 +150,24 @@ fn native_tcp_tracer_bullet() {
     let mut prices = Vec::new();
     let mut names = Vec::new();
     for returned in &blocks {
-        if returned.rows() == 0 {
+        if returned.row_count() == 0 {
             continue;
         }
-        ids.extend_from_slice(returned.column_slice::<u64>("id").expect("id"));
-        deltas.extend_from_slice(returned.column_slice::<i64>("delta").expect("delta"));
-        prices.extend_from_slice(returned.column_slice::<f64>("price").expect("price"));
-        names.extend(returned.column_strings("symbol").expect("symbol"));
+        ids.extend_from_slice(returned.column_slice_by_name::<u64>("id").expect("id"));
+        deltas.extend_from_slice(
+            returned
+                .column_slice_by_name::<i64>("delta")
+                .expect("delta"),
+        );
+        prices.extend_from_slice(
+            returned
+                .column_slice_by_name::<f64>("price")
+                .expect("price"),
+        );
+        let symbol = returned.column_index("symbol").expect("symbol column");
+        for row in 0..returned.row_count() {
+            names.push(returned.column_str(symbol, row).expect("symbol").to_owned());
+        }
     }
     assert_eq!(ids, [1, 2, 3]);
     assert_eq!(deltas, [-5, 0, 5]);

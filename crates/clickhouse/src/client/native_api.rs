@@ -1,17 +1,7 @@
 //! Native protocol APIs retain their interactive session and callback contracts.
 use super::{Backend, Client};
-use crate::{
-    BlockStream, ClientConfig, Error, ExternalTable, Inserter, NativeBlock, Query, Result,
-    ServerInfo,
-};
+use crate::{BlockStream, Error, ExternalTable, Inserter, NativeBlock, Query, Result, ServerInfo};
 impl Client {
-    /// Parse a Native endpoint list and retain the supplied connection options.
-    /// # Errors
-    /// Invalid endpoint lists or connection failures reject construction.
-    pub fn connect_with_config(endpoint: &str, mut config: ClientConfig<'_>) -> Result<Self> {
-        config.endpoints = crate::Endpoint::parse_list(endpoint)?;
-        Self::with_config(config)
-    }
     /// Reset a Native connection and acknowledge pending cleanup failures.
     /// # Errors
     /// HTTP transport is unsupported; failed Native reconnects leave the connection poisoned.
@@ -91,41 +81,6 @@ impl Client {
             Backend::Http(_) => Err(Error::unsupported(
                 "Native insert streaming requires a Native endpoint; use http_inserter for HTTP \
                  staging",
-            )),
-        }
-    }
-    /// Deliver Native result blocks incrementally to a callback.
-    /// # Errors
-    /// Native query and callback errors propagate; HTTP endpoints are unsupported.
-    pub fn query_blocks_for_each<'a, F>(
-        &mut self,
-        query: impl Into<Query<'a>>,
-        on_block: F,
-    ) -> Result<usize>
-    where
-        F: FnMut(NativeBlock) -> Result<()>,
-    {
-        match &mut self.backend {
-            Backend::Native(session) => session.query_blocks_for_each(query, on_block),
-            #[cfg(feature = "http")]
-            Backend::Http(_) => Err(Error::unsupported(
-                "Native block callbacks require a Native endpoint",
-            )),
-        }
-    }
-    /// Append Native result blocks into caller-owned storage.
-    /// # Errors
-    /// Native query errors propagate; HTTP endpoints are unsupported.
-    pub fn query_blocks_into<'a>(
-        &mut self,
-        query: impl Into<Query<'a>>,
-        dst: &mut Vec<NativeBlock>,
-    ) -> Result<usize> {
-        match &mut self.backend {
-            Backend::Native(session) => session.query_blocks_into(query, dst),
-            #[cfg(feature = "http")]
-            Backend::Http(_) => Err(Error::unsupported(
-                "Native block buffers require a Native endpoint",
             )),
         }
     }

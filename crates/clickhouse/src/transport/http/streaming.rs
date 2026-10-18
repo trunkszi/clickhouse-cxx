@@ -6,8 +6,8 @@ use std::{
 
 use curl::{EventLoop, Token};
 
-use super::{HttpTransport, lossy_text};
-use crate::{Compression, Error, HttpVersionChoice, Query, Result};
+use super::{HttpTransport, ResponseHeaders};
+use crate::{Compression, Error, Query, Result};
 
 /// Revokes the borrowed receiver before its stack frame can unwind.
 struct ReceiverScope<'a> {
@@ -71,8 +71,7 @@ impl HttpTransport {
         let address = Rc::new(Cell::new((&mut receive as *mut F).cast::<()>()));
         let callback_error = Rc::new(RefCell::new(None));
         let callback_panic = Rc::new(RefCell::new(None));
-        let status = Rc::new(Cell::new(0u32));
-        let encoded = Rc::new(Cell::new(false));
+        let metadata = Rc::new(RefCell::new(ResponseHeaders::default()));
         let received = Rc::new(Cell::new(0usize));
         let diagnostic = Rc::new(RefCell::new(Vec::new()));
         let negotiated = Rc::new(Cell::new(None));
@@ -84,38 +83,13 @@ impl HttpTransport {
             token: None,
         };
         {
-            let status = Rc::clone(&status);
-            let encoded = Rc::clone(&encoded);
+            let metadata = Rc::clone(&metadata);
             let negotiated = Rc::clone(&negotiated);
             let requested = self.version;
             easy.header_function(move |line| {
-                if line.starts_with(b"HTTP/") {
-                    let text = String::from_utf8_lossy(line);
-                    status.set(
-                        text.split_ascii_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0),
-                    );
-                    encoded.set(false);
-                    negotiated.set(if line.starts_with(b"HTTP/2 ") {
-                        Some(if requested == HttpVersionChoice::Http2PriorKnowledge {
-                            requested
-                        } else {
-                            HttpVersionChoice::Http2Tls
-                        })
-                    } else if line.starts_with(b"HTTP/1.") {
-                        Some(HttpVersionChoice::Http1)
-                    } else {
-                        None
-                    });
-                } else if let Some((name, value)) =
-                    String::from_utf8_lossy(line).trim().split_once(':')
-                    && name.eq_ignore_ascii_case("content-encoding")
-                    && !value.trim().eq_ignore_ascii_case("identity")
-                {
-                    encoded.set(true);
-                }
+                let mut metadata = metadata.borrow_mut();
+                metadata.observe(line, requested);
+                negotiated.set(metadata.negotiated);
                 true
             })
             .map_err(Error::curl)?;
@@ -124,8 +98,7 @@ impl HttpTransport {
             let address = Rc::clone(&address);
             let callback_error = Rc::clone(&callback_error);
             let callback_panic = Rc::clone(&callback_panic);
-            let status = Rc::clone(&status);
-            let encoded = Rc::clone(&encoded);
+            let metadata = Rc::clone(&metadata);
             let received = Rc::clone(&received);
             let diagnostic = Rc::clone(&diagnostic);
             // A plain function pointer erases the receiver type without extending
@@ -135,17 +108,21 @@ impl HttpTransport {
                 if callback_error.borrow().is_some() || callback_panic.borrow().is_some() {
                     return Ok(0);
                 }
-                if encoded.get() {
-                    *callback_error.borrow_mut() =
-                        Some(Error::unsupported("encoded incremental HTTP response"));
-                    return Ok(0);
-                }
-                if !(200..300).contains(&status.get()) {
+                let metadata = metadata.borrow();
+                if !(200..300).contains(&metadata.status) || metadata.exception.is_some() {
                     let mut diagnostic = diagnostic.borrow_mut();
                     let remaining = 4_096usize.saturating_sub(diagnostic.len());
                     diagnostic.extend_from_slice(&data[..data.len().min(remaining)]);
                     return Ok(data.len());
                 }
+                if !metadata.encoding.is_empty()
+                    && !metadata.encoding.eq_ignore_ascii_case("identity")
+                {
+                    *callback_error.borrow_mut() =
+                        Some(Error::unsupported("encoded incremental HTTP response"));
+                    return Ok(0);
+                }
+                drop(metadata);
                 let pointer = address.get();
                 if pointer.is_null() {
                     return Ok(0);
@@ -208,14 +185,10 @@ impl HttpTransport {
         if let Some(error) = transfer_error.borrow_mut().take() {
             return Err(error);
         }
-        if encoded.get() {
+        let metadata = metadata.borrow();
+        metadata.check(&diagnostic.borrow())?;
+        if !metadata.encoding.is_empty() && !metadata.encoding.eq_ignore_ascii_case("identity") {
             return Err(Error::unsupported("encoded incremental HTTP response"));
-        }
-        if !(200..300).contains(&status.get()) {
-            return Err(Error::Http {
-                status: status.get(),
-                message: lossy_text(&diagnostic.borrow()),
-            });
         }
         Ok(received.get())
     }

@@ -294,3 +294,36 @@ fn worker_client_round_trips_row_blocks() {
     assert_eq!(ids, vec![1_u64, 2]);
     assert_eq!(names, vec![String::from("abc"), String::from("abc")]);
 }
+
+/// Different handles nest on one thread; recursion on one handle is rejected.
+#[test]
+fn nested_handles_and_panic_recovery() {
+    let server = docker::Server::start();
+    let first = Client::thread_local(config(&server)).expect("first factory");
+    let second = Client::thread_local(config(&server)).expect("second factory");
+    first
+        .with(|client| {
+            client.execute("SELECT 1")?;
+            second.with(|client| client.execute("SELECT 2"))?;
+            assert!(matches!(first.with(|_| Ok(())), Err(Error::Config { .. })));
+            Ok(())
+        })
+        .expect("independent factories may nest");
+    let worker = Client::connect_workers(config(&server)).expect("worker handle");
+    let nested = Client::connect_workers(config(&server)).expect("nested worker");
+    worker
+        .with(|client| {
+            client.execute("SELECT 1")?;
+            nested.with(|client| client.execute("SELECT 2"))?;
+            assert!(matches!(worker.with(|_| Ok(())), Err(Error::Config { .. })));
+            Ok(())
+        })
+        .expect("independent workers may nest");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        worker.with::<()>(|_| panic!("user callback failed"))
+    }));
+    assert!(panic.is_err());
+    worker
+        .execute("SELECT 3")
+        .expect("lease and client restored");
+}

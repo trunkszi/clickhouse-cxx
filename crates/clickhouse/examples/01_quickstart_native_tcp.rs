@@ -108,17 +108,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut native = NativeBlock::new();
     native.push_u64("id", &ids)?;
     native.push_f64("value", &values)?;
-    client.insert_block("lesson_quickstart", &mut native)?;
+    client.insert_block("lesson_quickstart", &Block::from_native(&native)?)?;
 
     println!("\nlive Native TCP rows");
     for block in client.query_blocks("SELECT id, value FROM lesson_quickstart ORDER BY id")? {
         // The Native protocol may deliver a schema-only header block before
         // the data blocks. It has no rows and no usable column values.
-        if block.rows() == 0 {
+        if block.row_count() == 0 {
             continue;
         }
-        let live_ids: &[u64] = block.column_slice("id")?;
-        let live_values: &[f64] = block.column_slice("value")?;
+        let live_ids: &[u64] = block.column_slice_by_name("id")?;
+        let live_values: &[f64] = block.column_slice_by_name("value")?;
         println!("  id={live_ids:?} value={live_values:?}");
     }
 

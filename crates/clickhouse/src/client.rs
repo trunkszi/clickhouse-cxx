@@ -4,17 +4,21 @@ pub(crate) mod native_session;
 #[cfg(feature = "tcp")]
 use native_session::NativeSession;
 
-#[cfg(feature = "tcp")]
 mod builder;
 #[cfg(feature = "tcp")]
 mod native_api;
-#[cfg(feature = "tcp")]
 pub use builder::ClientBuilder;
 
-#[cfg(feature = "tcp")]
-use crate::native_block::NativeBlock;
 #[cfg(feature = "http")]
 mod http_api;
+#[cfg(feature = "http")]
+mod sql_format;
+#[cfg(feature = "http")]
+use sql_format::ensure_format;
+mod blocks;
+mod configuration;
+mod info;
+mod typed;
 
 use crate::{
     Block, Result,
@@ -32,7 +36,7 @@ use crate::{
 
 enum Backend {
     #[cfg(feature = "tcp")]
-    Native(NativeSession),
+    Native(Box<NativeSession>),
     #[cfg(feature = "http")]
     Http(HttpTransport),
 }
@@ -84,12 +88,12 @@ impl Client {
                     let native_endpoint = endpoint.clone();
                     #[cfg(not(feature = "http"))]
                     let native_endpoint = endpoint;
-                    Backend::Native(NativeSession::connect(
+                    Backend::Native(Box::new(NativeSession::connect(
                         native_endpoint,
                         user,
                         password,
                         database,
-                    )?)
+                    )?))
                 }
                 #[cfg(not(feature = "tcp"))]
                 {
@@ -137,62 +141,6 @@ impl Client {
             #[cfg(feature = "http")]
             http_observer: None,
         })
-    }
-    /// Connect to a managed Native TCP or TCPS endpoint list.
-    /// # Errors
-    /// HTTP lists and Native connection or TLS configuration failures are rejected.
-    pub fn new(config: crate::ClientConfig<'_>) -> Result<Self> {
-        Self::with_config(config)
-    }
-    /// Connect with Native TLS, endpoint selection, and observer configuration.
-    /// # Errors
-    /// HTTP endpoint lists are unsupported here; use `connect` for HTTP.
-    pub fn with_config(config: crate::ClientConfig<'_>) -> Result<Self> {
-        if config
-            .endpoints
-            .iter()
-            .any(|e| !matches!(e.scheme(), Scheme::Tcp | Scheme::Tcps))
-        {
-            return Err(Error::unsupported(
-                "managed failover configuration requires Native TCP or TCPS endpoints",
-            ));
-        }
-        #[cfg(not(feature = "tcp"))]
-        {
-            drop(config);
-            Err(Error::unsupported(
-                "managed Native configuration requires the tcp feature",
-            ))
-        }
-        #[cfg(feature = "tcp")]
-        {
-            #[cfg(feature = "http")]
-            let endpoint = config
-                .endpoints
-                .first()
-                .cloned()
-                .ok_or_else(|| Error::Config {
-                    reason: "endpoint list is empty".into(),
-                })?;
-            #[cfg(feature = "http")]
-            let database = config.database.as_ref().to_owned();
-            let native = NativeSession::new(config)?;
-            Ok(Self {
-                backend: Backend::Native(native),
-                #[cfg(feature = "http")]
-                endpoint,
-                #[cfg(feature = "http")]
-                database,
-                #[cfg(feature = "http")]
-                compression: Compression::None,
-                #[cfg(feature = "http")]
-                dedup: None,
-                #[cfg(feature = "http")]
-                http_health: [crate::EndpointHealth::new(0)],
-                #[cfg(feature = "http")]
-                http_observer: None,
-            })
-        }
     }
     /// Observe Native endpoint transitions; a single HTTP endpoint never transitions.
     pub fn on_failover(&mut self, callback: impl FnMut(&crate::FailoverEvent<'_>) + 'static) {
@@ -409,21 +357,7 @@ impl Client {
         control_log!("execute statement_bytes={}", query.sql().len());
         match &mut self.backend {
             #[cfg(feature = "tcp")]
-            Backend::Native(inner) => {
-                if !query.settings().is_empty()
-                    || query.has_event_callbacks()
-                    || !query.query_id.is_empty()
-                    || !query.params.is_empty()
-                    || query.tracing_context.is_some()
-                    || query.compression_override().is_some()
-                    || query.deduplication_token_value().is_some()
-                {
-                    return Err(Error::unsupported(
-                        "Native query settings are not supported",
-                    ));
-                }
-                inner.execute(query.sql())
-            }
+            Backend::Native(inner) => inner.execute(query.reborrow()),
             #[cfg(feature = "http")]
             Backend::Http(_) => {
                 self.http_call(query, query.sql(), &[])?;
@@ -510,38 +444,6 @@ impl Client {
         self.http_call(query, query.sql(), bytes)?;
         Ok(())
     }
-    /// Insert a Native transport block through either endpoint scheme.
-    /// # Errors
-    /// Invalid blocks, conversion failures, or server rejection propagate.
-    #[cfg(feature = "tcp")]
-    pub fn insert_block(&mut self, table: &str, block: &mut NativeBlock) -> Result<()> {
-        match &mut self.backend {
-            #[cfg(feature = "tcp")]
-            Backend::Native(session) => session.insert_block(table, block),
-            #[cfg(feature = "http")]
-            Backend::Http(_) => self.insert_owned_block(table, &Block::from_native(block)?),
-        }
-    }
-    /// Query Native transport blocks through either endpoint scheme.
-    /// # Errors
-    /// Transport, protocol, and unsupported conversion failures propagate.
-    #[cfg(feature = "tcp")]
-    pub fn query_blocks<'a>(&mut self, query: impl Into<Query<'a>>) -> Result<Vec<NativeBlock>> {
-        let query = query.into();
-        match &mut self.backend {
-            #[cfg(feature = "tcp")]
-            Backend::Native(session) => session.query_blocks(query),
-            #[cfg(feature = "http")]
-            Backend::Http(_) => {
-                let sql = ensure_format(query.sql(), "Native");
-                let bytes = self.http_call(&query, &sql, &[])?;
-                crate::native_format::decode_blocks(&bytes, 0)?
-                    .iter()
-                    .map(Block::to_native)
-                    .collect()
-            }
-        }
-    }
     /// Insert serde rows without changing the derived RowClient API.
     /// # Errors
     /// Unsupported serde shapes, schema mismatch, or server errors reject insertion.
@@ -585,27 +487,15 @@ impl Client {
         match &self.backend {
             #[cfg(feature = "http")]
             Backend::Http(_) => {
-                let sql = ensure_format(query.sql(), "RowBinaryWithNamesAndTypes");
+                let sql = ensure_format(query.sql(), "RowBinaryWithNamesAndTypes")?;
                 let bytes = self.http_call(query, &sql, &[])?;
                 SerdeBridge::block_to_rows(&crate::native_format::decode_rowbinary(&bytes)?)
             }
             #[cfg(feature = "tcp")]
             Backend::Native(_) => {
-                if !query.settings().is_empty()
-                    || query.has_event_callbacks()
-                    || !query.query_id.is_empty()
-                    || !query.params.is_empty()
-                    || query.tracing_context.is_some()
-                    || query.compression_override().is_some()
-                    || query.deduplication_token_value().is_some()
-                {
-                    return Err(Error::unsupported(
-                        "Native query settings are not supported",
-                    ));
-                }
                 let mut rows = Vec::new();
-                for b in self.query_owned_blocks(query.sql())? {
-                    rows.extend(SerdeBridge::block_to_rows(&b)?);
+                for block in self.query_blocks(query.reborrow())? {
+                    rows.extend(SerdeBridge::block_to_rows(&block)?);
                 }
                 Ok(rows)
             }
@@ -622,7 +512,7 @@ impl Client {
         let blocks = match &self.backend {
             #[cfg(feature = "http")]
             Backend::Http(_) => {
-                let sql = ensure_format(query.sql(), "Native");
+                let sql = ensure_format(query.sql(), "Native")?;
                 let bytes = self.http_call(query, &sql, &[])?;
                 crate::native_format::decode_blocks(&bytes, 0)?
             }
@@ -656,7 +546,12 @@ impl Client {
         Ok(crate::inserter::HttpInserter::new(self, table))
     }
     #[cfg(feature = "http")]
-    pub(crate) fn insert_native_payload(&mut self, table: &str, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn insert_native_payload(
+        &mut self,
+        table: &str,
+        bytes: &[u8],
+        schema: &[(String, String)],
+    ) -> Result<()> {
         match &self.backend {
             #[cfg(feature = "tcp")]
             Backend::Native(_) => Err(Error::unsupported(
@@ -664,18 +559,31 @@ impl Client {
             )),
             #[cfg(feature = "http")]
             Backend::Http(_) => {
-                let sql = format!("INSERT INTO {} FORMAT Native", quote_table(table)?);
+                if schema.is_empty() {
+                    return Err(Error::protocol(
+                        "nonempty Native insert requires a column schema",
+                    ));
+                }
+                let names = schema
+                    .iter()
+                    .map(|(name, _)| quote_ident(name))
+                    .collect::<Result<Vec<_>>>()?;
+                let sql = format!(
+                    "INSERT INTO {} ({}) FORMAT Native",
+                    quote_table(table)?,
+                    names.join(", ")
+                );
                 self.http_call(&Query::new(""), &sql, bytes)?;
                 Ok(())
             }
         }
     }
     pub(crate) fn insert_owned_block(&mut self, table: &str, block: &Block) -> Result<()> {
-        match &self.backend {
+        match &mut self.backend {
             #[cfg(feature = "tcp")]
-            Backend::Native(_) => {
+            Backend::Native(session) => {
                 let mut native = block.to_native()?;
-                self.insert_block(table, &mut native)
+                session.insert_block(table, &mut native)
             }
             #[cfg(feature = "http")]
             Backend::Http(_) => {
@@ -699,21 +607,7 @@ impl Client {
         }
     }
     pub(crate) fn query_owned_blocks(&mut self, sql: &str) -> Result<Vec<Block>> {
-        match &self.backend {
-            #[cfg(feature = "tcp")]
-            Backend::Native(_) => self
-                .query_blocks(sql)?
-                .iter()
-                .filter(|b| b.rows() > 0)
-                .map(Block::from_native)
-                .collect(),
-            #[cfg(feature = "http")]
-            Backend::Http(_) => {
-                let sql = ensure_format(sql, "Native");
-                let bytes = self.http_call(&Query::new(""), &sql, &[])?;
-                crate::native_format::decode_blocks(&bytes, 0)
-            }
-        }
+        self.query_blocks(sql)
     }
     #[cfg(feature = "http")]
     fn http_call(&mut self, query: &Query<'_>, sql: &str, body: &[u8]) -> Result<Vec<u8>> {
@@ -732,14 +626,6 @@ impl Client {
                 "formatted HTTP bytes require an HTTP endpoint",
             )),
         }
-    }
-}
-#[cfg(feature = "http")]
-fn ensure_format(sql: &str, format: &str) -> String {
-    if sql.to_ascii_lowercase().contains(" format ") {
-        sql.to_owned()
-    } else {
-        format!("{sql} FORMAT {format}")
     }
 }
 #[cfg(feature = "http")]
