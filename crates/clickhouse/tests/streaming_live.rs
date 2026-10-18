@@ -327,3 +327,74 @@ fn lifecycle_failed_drop_is_observable_and_poisoned() {
     assert!(!client.is_usable());
     assert!(matches!(client.ping(), Err(Error::ConnectionPoisoned)));
 }
+
+#[test]
+fn read_paths_deliver_into_caller_storage() {
+    let server = TestClickHouseContainer::start();
+    let mut client = server.client(CompressionMethod::None);
+
+    let mut destination = Vec::new();
+    let appended = client
+        .query_blocks_into("SELECT number FROM numbers(1000)", &mut destination)
+        .unwrap();
+    assert_eq!(appended, destination.len());
+    let rows: usize = destination.iter().map(NativeBlock::rows).sum();
+    assert_eq!(rows, 1000, "caller storage receives every row");
+    let first: Vec<u64> = destination
+        .iter()
+        .flat_map(|block| {
+            block
+                .column_slice::<u64>(&block.column_name(0))
+                .unwrap()
+                .iter()
+                .copied()
+        })
+        .collect();
+    assert_eq!(first.len(), 1000);
+
+    let mut delivered = 0;
+    let callbacks = client
+        .query_blocks_for_each("SELECT number FROM numbers(1000)", |block| {
+            delivered += block.rows();
+            Ok(())
+        })
+        .unwrap();
+    assert!(callbacks > 0, "at least one block is delivered");
+    assert_eq!(delivered, 1000, "callbacks receive every row");
+
+    let error = client
+        .query_blocks_for_each("SELECT number FROM numbers(100000000)", |_| {
+            Err(Error::Invalid("stop after the first block".into()))
+        })
+        .unwrap_err();
+    assert!(matches!(error, Error::Invalid(_)));
+    client.ping().unwrap();
+}
+
+#[test]
+fn copy_column_into_slice_uses_caller_memory() {
+    let server = TestClickHouseContainer::start();
+    let mut client = server.client(CompressionMethod::None);
+    let blocks = client
+        .query_blocks("SELECT toUInt64(number) AS id FROM numbers(5)")
+        .unwrap();
+    let block = blocks
+        .iter()
+        .find(|block| block.rows() == 5)
+        .expect("one result block");
+    assert_eq!(block.rows(), 5);
+
+    let mut values = [99_u64; 8];
+    let copied = block.copy_column_into_slice(0, &mut values).unwrap();
+    assert_eq!(copied, 5);
+    assert_eq!(&values[..5], &[0, 1, 2, 3, 4]);
+    assert_eq!(&values[5..], &[99, 99, 99], "tail stays caller-owned");
+
+    let mut small = [7_u64; 2];
+    assert_eq!(block.copy_column_into_slice(0, &mut small).unwrap(), 2);
+    assert_eq!(small, [0, 1]);
+
+    let mut wrong = [0_u32; 8];
+    assert!(block.copy_column_into_slice(0, &mut wrong).is_err());
+    assert!(block.copy_column_into_slice(9, &mut values).is_err());
+}

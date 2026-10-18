@@ -23,6 +23,16 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// Rebuild an endpoint from validated parts.
+    pub(crate) fn from_parts(scheme: Scheme, host: String, port: u16) -> Self {
+        Self {
+            scheme,
+            host: Cow::Owned(host),
+            port,
+            thread_bound: std::marker::PhantomData,
+        }
+    }
+
     /// Parse `tcp://host[:port]` or `tcps://host[:port]`, defaulting to 9000 or 9440.
     ///
     /// # Errors

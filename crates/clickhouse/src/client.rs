@@ -25,7 +25,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Open a Native TCP connection with default credentials.
+    /// Open a Native TCP connection with explicit credentials.
     ///
     /// # Errors
     /// Returns endpoint, handshake, authentication, or connection errors.
@@ -461,14 +461,15 @@ impl ClientBuilder {
     }
 
     fn into_config(mut self) -> Result<ClientConfig<'static>> {
-        let endpoints = self
-            .endpoints
-            .take()
-            .ok_or_else(|| Error::Invalid("client endpoint is required".into()))?;
-        if endpoints.is_empty() {
-            return Err(Error::Invalid("endpoint list is empty".into()));
+        if let Some(endpoints) = self.endpoints.take() {
+            if endpoints.is_empty() {
+                return Err(Error::Invalid("endpoint list is empty".into()));
+            }
+            self.config.endpoints = endpoints;
         }
-        self.config.endpoints = endpoints;
+        if self.config.endpoints.is_empty() {
+            return Err(Error::Invalid("client endpoint is required".into()));
+        }
         Ok(self.config)
     }
 }

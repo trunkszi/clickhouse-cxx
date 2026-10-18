@@ -1,8 +1,9 @@
 //! Native endpoint credentials, security, and failover configuration.
 use std::{borrow::Cow, time::Duration};
 
-use crate::{CompressionMethod, Endpoint, Error, FailoverPolicy, TlsSettings};
-use crate::threading::WorkerBalance;
+use crate::{
+    CompressionMethod, Endpoint, Error, FailoverPolicy, TlsSettings, threading::WorkerBalance,
+};
 
 pub(crate) type FailoverCallback = Box<dyn FnMut(&crate::FailoverEvent<'_>)>;
 
