@@ -216,7 +216,8 @@ macro_rules! map_field {
             fn borrow(&self)->Self::Input<'_>{MapRef::$variant(self)}
             fn view(c:&Column)->Result<Self::View<'_>>{
                 let ColumnData::Map {offsets,keys,values}=&c.data else{return Err(schema("expected map storage"));};
-                if !c.type_name.bytes().eq("Map(".bytes().chain(keys.type_name.bytes()).chain(",".bytes()).chain(values.type_name.bytes()).chain(")".bytes())) {return Err(schema("map field type mismatch"));}
+                let crate::type_layout::Layout::Map(key_type,value_type)=crate::type_layout::layout(&c.type_name)? else {return Err(schema("map field type mismatch"));};
+                if !crate::type_layout::same_type(key_type,&keys.type_name)||!crate::type_layout::same_type(value_type,&values.type_name){return Err(schema("map field type mismatch"));}
                 let keys=K::view(keys)?;let values=V::view(values)?;
                 validate_offsets(offsets,K::view_len(keys))?;
                 if V::view_len(values)!=K::view_len(keys)||offsets.len()!=c.len(){return Err(schema("map column length mismatch"));}

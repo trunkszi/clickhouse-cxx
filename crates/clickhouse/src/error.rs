@@ -13,6 +13,12 @@ pub enum Error {
     /// An HTTP or binary payload violated its declared layout.
     #[error("protocol: {0}")]
     Protocol(Cow<'static, str>),
+    /// A declared ClickHouse column type has no supported decoding representation.
+    #[error("unsupported column type: {type_name}")]
+    UnsupportedColumnType {
+        /// The exact declared ClickHouse type name.
+        type_name: String,
+    },
     /// The HTTP endpoint returned a non-success response.
     #[error("http status {status}: {message}")]
     Http {
@@ -186,10 +192,96 @@ impl From<cxx::Exception> for Error {
     }
 }
 
+#[cfg(feature = "tcp")]
+impl From<crate::WireError> for Error {
+    fn from(error: crate::WireError) -> Self {
+        use crate::WireError as W;
+        match error {
+            W::Native(message) => Self::native(message),
+            W::UnsupportedColumnType { type_name } => Self::UnsupportedColumnType { type_name },
+            W::UnknownColumn(col_name) => Self::ColumnNotFound {
+                col_name: col_name.into(),
+            },
+            W::TypeMismatch {
+                column,
+                expected,
+                actual,
+            } => schema(format!(
+                "column '{column}' has type '{actual}', expected '{expected}'"
+            )),
+            W::Unsupported(message) => Self::unsupported(message),
+            W::IndexOutOfBounds { index, len } => Self::RowIndexOutOfBounds {
+                row_idx: index,
+                row_count: len,
+            },
+            error @ (W::Alignment | W::InvalidLength { .. }) => Self::ZeroCopyCast {
+                // A standalone wire error has no block index or column name.
+                col_idx: usize::MAX,
+                col_name: Cow::Borrowed("<unknown>"),
+                reason: error.to_string().into(),
+            },
+            error @ W::Utf8(_) => Self::protocol(error.to_string()),
+        }
+    }
+}
+
 /// Construct a schema error without allocating for static diagnostics.
 pub(crate) fn schema(reason: impl Into<Cow<'static, str>>) -> Error {
     Error::SchemaMismatch {
         table: None,
         reason: reason.into(),
+    }
+}
+
+#[cfg(all(test, feature = "tcp"))]
+mod wire_conversion_tests {
+    use super::*;
+    use crate::WireError;
+
+    #[test]
+    fn conversion_preserves_categories_and_diagnostics() {
+        assert!(
+            matches!(Error::from(WireError::Native("failure".into())), Error::Native { message } if message == "failure")
+        );
+        assert!(
+            matches!(Error::from(WireError::UnknownColumn("missing".into())), Error::ColumnNotFound { col_name } if col_name == "missing")
+        );
+        assert!(matches!(
+            Error::from(WireError::IndexOutOfBounds { index: 7, len: 2 }),
+            Error::RowIndexOutOfBounds {
+                row_idx: 7,
+                row_count: 2
+            }
+        ));
+        assert!(
+            matches!(Error::from(WireError::UnsupportedColumnType {type_name: "Tuple(UInt64)".into()}), Error::UnsupportedColumnType {type_name} if type_name == "Tuple(UInt64)")
+        );
+        let mismatch = WireError::TypeMismatch {
+            column: "price".into(),
+            expected: "UInt64".into(),
+            actual: "String".into(),
+        };
+        let diagnostic = mismatch.to_string();
+        assert!(
+            matches!(Error::from(mismatch), Error::SchemaMismatch { reason, .. } if reason == diagnostic)
+        );
+        for error in [
+            WireError::Alignment,
+            WireError::InvalidLength {
+                len: 7,
+                element_size: 4,
+            },
+        ] {
+            let diagnostic = error.to_string();
+            assert!(
+                matches!(Error::from(error), Error::ZeroCopyCast { col_idx: usize::MAX, reason, .. } if reason == diagnostic)
+            );
+        }
+        let utf8 = WireError::Utf8("label".into());
+        let diagnostic = utf8.to_string();
+        assert!(matches!(Error::from(utf8), Error::Protocol(reason) if reason == diagnostic));
+        assert!(
+            matches!(Error::from(WireError::Unsupported("shape".into())), Error::Unsupported(reason) if reason == "shape")
+        );
     }
 }

@@ -87,7 +87,7 @@ fn hash_map_roundtrips_through_rowbinary_and_blocks() {
 }
 
 #[test]
-fn empty_maps_fall_back_to_a_map_column_and_still_decode() {
+fn empty_maps_require_a_type_for_blocks_and_still_decode_rowbinary() {
     let rows = vec![
         BTreeRow {
             attributes: BTreeMap::new(),
@@ -97,14 +97,7 @@ fn empty_maps_fall_back_to_a_map_column_and_still_decode() {
         },
     ];
 
-    let block = SerdeBridge::rows_to_block(&rows).expect("build block");
-    let column_type = type_name(&block, "attributes");
-    assert!(
-        column_type.starts_with("Map("),
-        "an all-empty map column keeps a map type, got `{column_type}`"
-    );
-    let decoded: Vec<BTreeRow> = SerdeBridge::block_to_rows(&block).expect("read block");
-    assert_eq!(decoded, rows);
+    assert!(is_serde_error(SerdeBridge::rows_to_block(&rows)));
 
     let (_, bytes) = SerdeBridge::to_rowbinary(&rows).expect("encode rows");
     assert_eq!(bytes, [0, 0]);
@@ -127,6 +120,53 @@ fn a_leading_empty_map_does_not_block_later_type_inference() {
     assert_eq!(type_name(&block, "attributes"), "Map(String,UInt64)");
     let decoded: Vec<BTreeRow> = SerdeBridge::block_to_rows(&block).expect("read block");
     assert_eq!(decoded, rows);
+}
+
+/// Serde map reads accept equivalent whitespace in schema names.
+#[test]
+fn map_columns_accept_whitespace_in_declared_type_names() {
+    let rows = vec![BTreeRow {
+        attributes: BTreeMap::from([(String::from("venue"), 7)]),
+    }];
+    let (_, rowbinary) = SerdeBridge::to_rowbinary(&rows).expect("encode map rows");
+    for spelling in ["Map(String, UInt64)", " Map ( String , UInt64 ) "] {
+        let mut encoded = vec![1, 10];
+        encoded.extend_from_slice(b"attributes");
+        encoded.push(u8::try_from(spelling.len()).unwrap());
+        encoded.extend_from_slice(spelling.as_bytes());
+        encoded.extend_from_slice(&rowbinary);
+        let block =
+            clickhouse::native_format::decode_rowbinary(&encoded).expect("decode spaced map");
+        let decoded: Vec<BTreeRow> = SerdeBridge::block_to_rows(&block).expect("read spaced map");
+        assert_eq!(decoded, rows);
+        let mut visited = Vec::new();
+        assert_eq!(
+            SerdeBridge::block_to_rows_with(&block, |row: BTreeRow| {
+                visited.push(row);
+                Ok(())
+            })
+            .expect("visit spaced map"),
+            rows.len()
+        );
+        assert_eq!(visited, rows);
+        let mut appended: Vec<BTreeRow> = Vec::new();
+        assert_eq!(
+            SerdeBridge::block_to_rows_into(&block, &mut appended).expect("append spaced map"),
+            rows.len()
+        );
+        assert_eq!(appended, rows);
+        let mut filled = vec![
+            BTreeRow {
+                attributes: BTreeMap::new()
+            };
+            rows.len()
+        ];
+        assert_eq!(
+            SerdeBridge::block_to_rows_into_slice(&block, &mut filled).expect("fill spaced map"),
+            rows.len()
+        );
+        assert_eq!(filled, rows);
+    }
 }
 
 #[test]
@@ -342,20 +382,13 @@ fn logical_columns_reject_wrong_widths_and_shapes() {
         &uuid
     )));
 
-    // A UUID column carries exactly 16 bytes per row.
-    #[derive(serde::Deserialize)]
-    struct UuidBytes {
-        #[allow(dead_code)]
-        #[serde(with = "serde_bytes")]
-        id: Vec<u8>,
-    }
+    // A UUID column rejects undersized Rust elements before storage is committed.
     let mut short_uuid = Block::new();
-    short_uuid
-        .append_fixed_slice("id", "UUID", &[0_u64])
-        .expect("short UUID column");
-    assert!(is_serde_error(SerdeBridge::block_to_rows::<UuidBytes>(
-        &short_uuid
-    )));
+    assert!(matches!(
+        short_uuid.append_fixed_slice("id", "UUID", &[0_u64]),
+        Err(Error::SchemaMismatch { .. })
+    ));
+    assert_eq!(short_uuid.column_count(), 0);
 }
 
 #[test]

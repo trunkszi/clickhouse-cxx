@@ -46,8 +46,10 @@ impl WireBlock {
         })
     }
 
-    pub(crate) fn wire_handle(&self) -> &sys::BlockHandle {
-        self.handle.as_ref().expect("block handle")
+    pub(crate) fn wire_handle(&self) -> WireResult<&sys::BlockHandle> {
+        self.handle
+            .as_ref()
+            .ok_or_else(|| WireError::Unsupported("block handle is null".to_owned()))
     }
 
     /// Append a named column.
@@ -105,7 +107,7 @@ impl WireBlock {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn column_handle(&self, name: &str) -> WireResult<SharedPtr<sys::ColumnHandle>> {
+    pub(crate) fn column_handle(&self, name: &str) -> WireResult<SharedPtr<sys::ColumnHandle>> {
         let index = self
             .index_of(name)
             .ok_or_else(|| WireError::UnknownColumn(name.to_owned()))?;
@@ -281,44 +283,9 @@ impl WireBlock {
     ///
     /// Returns an error if the underlying operation fails.
     pub fn fixed_kind(&self, name: &str) -> WireResult<FixedKind> {
-        let code = self.column_type_code(name)?;
-        match code {
-            TypeCode::UInt8 => Ok(FixedKind::UInt8),
-            TypeCode::UInt16 => Ok(FixedKind::UInt16),
-            TypeCode::UInt32 => Ok(FixedKind::UInt32),
-            TypeCode::UInt64 => Ok(FixedKind::UInt64),
-            TypeCode::UInt128 => Ok(FixedKind::UInt128),
-            TypeCode::Int8 => Ok(FixedKind::Int8),
-            TypeCode::Int16 => Ok(FixedKind::Int16),
-            TypeCode::Int32 => Ok(FixedKind::Int32),
-            TypeCode::Int64 => Ok(FixedKind::Int64),
-            TypeCode::Int128 => Ok(FixedKind::Int128),
-            TypeCode::Float32 => Ok(FixedKind::Float32),
-            TypeCode::Float64 => Ok(FixedKind::Float64),
-            TypeCode::Bool => Ok(FixedKind::Bool),
-            TypeCode::Date => Ok(FixedKind::Date),
-            TypeCode::Date32 => Ok(FixedKind::Date32),
-            TypeCode::DateTime => Ok(FixedKind::DateTime),
-            TypeCode::DateTime64 => Ok(FixedKind::DateTime64),
-            TypeCode::Time => Ok(FixedKind::Time),
-            TypeCode::Time64 => Ok(FixedKind::Time64),
-            TypeCode::Decimal => {
-                let type_name = self.column_type_name(name)?;
-                crate::column::decimal_kind(&type_name).ok_or_else(|| {
-                    WireError::Unsupported(format!("unknown decimal type '{type_name}'"))
-                })
-            }
-            TypeCode::Decimal32 => Ok(FixedKind::Decimal32),
-            TypeCode::Decimal64 => Ok(FixedKind::Decimal64),
-            TypeCode::Decimal128 => Ok(FixedKind::Decimal128),
-            TypeCode::Uuid => Ok(FixedKind::Uuid),
-            TypeCode::Ipv4 => Ok(FixedKind::Ipv4),
-            TypeCode::Ipv6 => Ok(FixedKind::Ipv6),
-            TypeCode::Enum8 => Ok(FixedKind::Enum8),
-            TypeCode::Enum16 => Ok(FixedKind::Enum16),
-            other => Err(WireError::Unsupported(format!(
-                "column '{name}' has non-fixed type {other:?}"
-            ))),
-        }
+        let type_name = self.column_type_name(name)?;
+        crate::type_layout::fixed_kind(&type_name).ok_or_else(|| {
+            WireError::Unsupported(format!("column '{name}' has non-fixed type '{type_name}'"))
+        })
     }
 }

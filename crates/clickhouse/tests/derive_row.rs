@@ -43,7 +43,7 @@ fn flat_batch_roundtrip_and_reuse() {
     assert_eq!(Event::COLUMN_NAMES[0], "eventId");
     let block = batch.to_block().unwrap();
     let view = EventBlockView::try_from_block(&block).unwrap();
-    assert_eq!(view.event_id, &[42, 43]);
+    assert_eq!(view.column_event_id(), &[42, 43]);
     let first = view.get(0).unwrap();
     assert_eq!(first.symbol, "BTC/USDT");
     assert_eq!(first.payload, &[0, 255, 7]);
@@ -116,7 +116,7 @@ fn projected_slices_share_block_storage() {
     let block = batch.to_block().unwrap();
     let view = EventBlockView::try_from_block(&block).unwrap();
     assert_eq!(
-        view.event_id.as_ptr(),
+        view.column_event_id().as_ptr(),
         block
             .column_slice_by_name::<u64>("eventId")
             .unwrap()
@@ -135,7 +135,7 @@ fn projected_slices_share_block_storage() {
             .unwrap()
             .as_ptr()
     );
-    assert_eq!(row.prices.as_ptr(), view.prices.values.as_ptr());
+    assert_eq!(row.prices.as_ptr(), view.column_prices().values.as_ptr());
     let mut iter = view.iter();
     assert_eq!(iter.len(), 1);
     assert!(iter.next().is_some());

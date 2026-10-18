@@ -11,6 +11,12 @@ pub enum WireError {
     /// A column name was not found in the block.
     #[error("unknown column: {0}")]
     UnknownColumn(String),
+    /// The declared ClickHouse column type has no supported representation.
+    #[error("unsupported column type: {type_name}")]
+    UnsupportedColumnType {
+        /// The exact declared ClickHouse type name.
+        type_name: String,
+    },
     /// A requested Rust type does not match the ClickHouse column type.
     #[error("column '{column}' has type '{actual}', expected '{expected}'")]
     TypeMismatch {

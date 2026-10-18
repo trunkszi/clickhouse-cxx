@@ -54,14 +54,12 @@ struct OptionIntRow {
     value: Option<i64>,
 }
 
+/// Placeholder-only nullable columns reject inference while RowBinary preserves null tags.
 #[test]
-fn all_none_option_falls_back_to_nullable_string_and_still_decodes() {
+fn all_none_options_reject_unknown_block_types() {
     let rows = vec![OptionIntRow { value: None }, OptionIntRow { value: None }];
 
-    let block = SerdeBridge::rows_to_block(&rows).expect("build block");
-    assert_eq!(type_name(&block, "value"), "Nullable(String)");
-    let decoded: Vec<OptionIntRow> = SerdeBridge::block_to_rows(&block).expect("read block");
-    assert_eq!(decoded, rows);
+    assert!(is_serde_error(SerdeBridge::rows_to_block(&rows)));
 
     let (_, bytes) = SerdeBridge::to_rowbinary(&rows).expect("encode rows");
     let decoded: Vec<OptionIntRow> = SerdeBridge::from_rowbinary(&bytes).expect("decode rows");
@@ -101,16 +99,17 @@ struct VecIntRow {
     values: Vec<i64>,
 }
 
+/// Empty arrays retain their positional RowBinary form without inventing a block leaf type.
 #[test]
-fn all_empty_vec_falls_back_to_array_string_and_still_decodes() {
+fn all_empty_vectors_reject_unknown_block_types() {
     let rows = vec![
         VecIntRow { values: Vec::new() },
         VecIntRow { values: Vec::new() },
     ];
 
-    let block = SerdeBridge::rows_to_block(&rows).expect("build block");
-    assert_eq!(type_name(&block, "values"), "Array(String)");
-    let decoded: Vec<VecIntRow> = SerdeBridge::block_to_rows(&block).expect("read block");
+    assert!(is_serde_error(SerdeBridge::rows_to_block(&rows)));
+    let (_, bytes) = SerdeBridge::to_rowbinary(&rows).expect("encode rows");
+    let decoded: Vec<VecIntRow> = SerdeBridge::from_rowbinary(&bytes).expect("decode rows");
     assert_eq!(decoded, rows);
 }
 

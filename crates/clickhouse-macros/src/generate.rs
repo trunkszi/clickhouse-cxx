@@ -1,6 +1,7 @@
 //! Emit the shared runtime contracts without row-wise owned allocations.
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 
 use crate::model::Model;
 pub fn expand(model: Model) -> TokenStream {
@@ -17,6 +18,13 @@ pub fn expand(model: Model) -> TokenStream {
     let row_ref = format_ident!("{}Ref", ident);
     let iter = format_ident!("{}Iter", ident);
     let names: Vec<_> = members.iter().map(|m| &m.ident).collect();
+    let view_fields: Vec<_> = (0..members.len())
+        .map(|index| format_ident!("__ch_col_{index}", span = Span::mixed_site()))
+        .collect();
+    let accessors: Vec<_> = members
+        .iter()
+        .map(|member| format_ident!("column_{}", member.ident.unraw()))
+        .collect();
     let columns: Vec<_> = members.iter().map(|m| &m.column).collect();
     let types: Vec<_> = members.iter().map(|m| &m.canonical).collect();
     let borrow: Vec<_> = members.iter().map(|m| &m.borrow).collect();
@@ -102,20 +110,22 @@ pub fn expand(model: Model) -> TokenStream {
         #[doc="A checked projection borrowing column buffers from an owned block."]
         #[derive(Clone,Copy)]
         #vis struct #view #view_generics #view_where{
-            #(pub #names:<#types as #runtime::row::Field>::View<'__block>,)*
+            #(#view_fields:<#types as #runtime::row::Field>::View<'__block>,)*
             __len:usize,
             __row: ::core::marker::PhantomData<fn()->#ident #type_generics>,
         }
         impl #view_impl #runtime::BlockView<'__block> for #view #view_args #view_where{
             type Row=#ident #type_generics;type Ref=#row_ref<'__block>;
             fn try_from_block(block:&'__block #runtime::Block)->#runtime::Result<Self>{
-                #(let #names=<#types as #runtime::row::Field>::view(block.column_by_name(#columns)?)?;if <#types as #runtime::row::Field>::view_len(#names)!=block.row_count(){return Err(#runtime::Error::SchemaMismatch{table:<#ident #type_generics as #runtime::Row>::TABLE_NAME.map(::std::borrow::Cow::Borrowed),reason: ::std::borrow::Cow::Borrowed("projected field row count mismatch")});})*
-                Ok(Self{#(#names,)*__len:block.row_count(),__row: ::core::marker::PhantomData})
+                #(let #view_fields=<#types as #runtime::row::Field>::view(block.column_by_name(#columns)?)?;if <#types as #runtime::row::Field>::view_len(#view_fields)!=block.row_count(){return Err(#runtime::Error::SchemaMismatch{table:<#ident #type_generics as #runtime::Row>::TABLE_NAME.map(::std::borrow::Cow::Borrowed),reason: ::std::borrow::Cow::Borrowed("projected field row count mismatch")});})*
+                Ok(Self{#(#view_fields,)*__len:block.row_count(),__row: ::core::marker::PhantomData})
             }
             fn len(&self)->usize{self.__len}
-            fn get(&self,row_idx:usize)->Option<Self::Ref>{if row_idx>=self.__len{return None;}Some(#row_ref{#(#names:<#types as #runtime::row::Field>::get(self.#names,row_idx)?),*})}
+            fn get(&self,row_idx:usize)->Option<Self::Ref>{if row_idx>=self.__len{return None;}Some(#row_ref{#(#names:<#types as #runtime::row::Field>::get(self.#view_fields,row_idx)?),*})}
         }
         impl #view_impl #view #view_args #view_where{
+            #(#[doc="Borrow the validated column projection."]
+            pub fn #accessors(&self)-><#types as #runtime::row::Field>::View<'__block>{self.#view_fields})*
             #[doc="Validate and borrow the block columns.\n\n# Errors\nMissing columns, schema mismatches, invalid encodings, or incompatible alignment reject the projection."]
             pub fn try_from_block(block:&'__block #runtime::Block)->#runtime::Result<Self>{<Self as #runtime::BlockView>::try_from_block(block)}
             #[doc="Number of validated rows."]pub fn len(&self)->usize{self.__len}

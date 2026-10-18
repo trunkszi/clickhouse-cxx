@@ -108,7 +108,7 @@ fn warmed_borrowed_paths_do_not_allocate() {
     assert_eq!(sum, 7);
     assert_eq!(batch.len(), 1);
     assert_eq!(
-        view.text.bytes().as_ptr(),
+        view.column_text().bytes().as_ptr(),
         view.get(0).unwrap().text.as_ptr()
     );
 }

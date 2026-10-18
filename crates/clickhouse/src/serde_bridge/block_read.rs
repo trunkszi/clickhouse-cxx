@@ -460,9 +460,15 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
         else {
             return Err(self.expected("`Map`"));
         };
-        let name = format!("Map({},{})", keys.type_name, values.type_name);
-        if self.column.type_name.as_ref() != name.as_str() {
-            return Err(self.expected(&format!("`{name}`")));
+        let valid_type = match crate::type_layout::layout(&self.column.type_name) {
+            Ok(crate::type_layout::Layout::Map(key_type, value_type)) => {
+                crate::type_layout::same_type(key_type, &keys.type_name)
+                    && crate::type_layout::same_type(value_type, &values.type_name)
+            }
+            _ => false,
+        };
+        if !valid_type {
+            return Err(self.expected("`Map` matching its key and value types"));
         }
         if keys.len() != values.len() {
             return Err(SerError::custom(format!(

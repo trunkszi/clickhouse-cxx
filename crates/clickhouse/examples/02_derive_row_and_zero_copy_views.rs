@@ -199,14 +199,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nzero-copy projections");
     println!("  view rows        = {}", view.len());
-    println!("  event_id slice   = {:?}", view.eventId);
-    println!("  scores values    = {:?}", view.scores.values);
-    println!("  scores offsets   = {:?}", view.scores.offsets);
+    println!("  event_id slice   = {:?}", view.column_eventId());
+    println!("  scores values    = {:?}", view.column_scores().values);
+    println!("  scores offsets   = {:?}", view.column_scores().offsets);
 
     // Fixed-width columns are slices into the block itself, not copies.
     let projected = block.column_slice_by_name::<u64>("event_id")?;
-    assert_eq!(view.eventId.as_ptr(), projected.as_ptr());
-    println!("  event_id address = {:p}", view.eventId.as_ptr());
+    assert_eq!(view.column_eventId().as_ptr(), projected.as_ptr());
+    println!("  event_id address = {:p}", view.column_eventId().as_ptr());
 
     // ---------------------------------------------------------------------
     // 3. Iterate borrowed rows without allocating.

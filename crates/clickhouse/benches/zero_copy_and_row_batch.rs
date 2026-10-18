@@ -21,7 +21,7 @@ fn rows(c: &mut Criterion) {
     let block = batch.to_block().unwrap();
     let view = EventBlockView::try_from_block(&block).unwrap();
     assert_eq!(
-        view.id.as_ptr(),
+        view.column_id().as_ptr(),
         block.column_slice::<u64>(0).unwrap().as_ptr()
     );
     let mut group = c.benchmark_group("rows");

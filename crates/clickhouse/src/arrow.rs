@@ -2,7 +2,7 @@
 //!
 //! IPC decoding may allocate. Projections and string access borrow the decoded
 //! arrays without copying; they never claim that wire decoding is allocation-free.
-use std::io::Cursor;
+use std::io::{self, Cursor, Read};
 
 use arrow_array::{
     Array, ArrayRef, LargeStringArray, PrimitiveArray, RecordBatch, StringArray,
@@ -14,6 +14,25 @@ pub use arrow_schema::DataType as ArrowDataType;
 
 use crate::{Error, Result, error::schema};
 
+// Arrow accepts EOF without an EOS marker. A partial length prefix must instead
+// produce an error that cannot be mistaken for a clean EOF at a message boundary.
+struct CompleteReads<'a>(Cursor<&'a [u8]>);
+impl Read for CompleteReads<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        let remaining = self.0.get_ref().len() as u64 - self.0.position();
+        if remaining != 0 && remaining < buf.len() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated Arrow message",
+            ));
+        }
+        self.0.read_exact(buf)
+    }
+}
+
 /// An owned Arrow batch whose columns can be projected as borrowed slices.
 pub struct ArrowBlockView {
     batch: RecordBatch,
@@ -24,7 +43,7 @@ impl ArrowBlockView {
     /// Malformed schema, truncated buffers, invalid arrays, or trailing bytes
     /// after the stream terminator reject the response.
     pub fn decode_stream(bytes: &[u8]) -> Result<Vec<Self>> {
-        let mut reader = StreamReader::try_new(Cursor::new(bytes), None)
+        let mut reader = StreamReader::try_new(CompleteReads(Cursor::new(bytes)), None)
             .map_err(|error| Error::protocol(format!("Arrow stream schema: {error}")))?;
         let mut batches = Vec::new();
         for batch in reader.by_ref() {
@@ -32,7 +51,7 @@ impl ArrowBlockView {
                 Error::protocol(format!("Arrow stream batch: {error}"))
             })?));
         }
-        if reader.get_ref().position() != bytes.len() as u64 {
+        if reader.get_ref().0.position() != bytes.len() as u64 {
             return Err(Error::protocol(
                 "trailing bytes after Arrow stream terminator",
             ));

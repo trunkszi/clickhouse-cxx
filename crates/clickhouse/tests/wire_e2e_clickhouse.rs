@@ -14,7 +14,6 @@ use clickhouse::{
     LowCardinalityColumn, MapColumn, NativeClient, NullableColumn, StringColumn, Time, Time64,
     TupleColumn, Uuid, WireBlock, WireColumn,
 };
-use zerocopy::FromBytes;
 
 struct ClickHouseContainer {
     name: String,
@@ -139,14 +138,6 @@ fn native_round_trip_primitives() {
         .select_one("SELECT id, name FROM t02_simple ORDER BY id")
         .expect("select")
         .expect("block");
-    let handle = selected.column_handle("id").expect("id handle");
-    let bytes = handle.as_ref().expect("id column").fixed_bytes();
-    eprintln!(
-        "id bytes len={} ptr={:p} mod4={}",
-        bytes.len(),
-        bytes.as_ptr(),
-        bytes.as_ptr() as usize % 4
-    );
     assert_eq!(
         selected.column_to_vec::<u32>("id").expect("ids"),
         vec![1, 2]
@@ -445,27 +436,38 @@ fn native_round_trip_full_type_matrix() {
     let json = selected.column_str("js", 0).expect("js");
     assert!(json.contains("\"a\"") && json.contains('1'));
     assert_eq!(selected.column_nulls("n").expect("nulls"), &[0]);
-    let handle = selected.column_handle("n").expect("nullable handle");
-    let nested = handle.as_ref().expect("handle").nested();
-    let nested = nested.as_ref().expect("nested");
-    let values = <[u32]>::ref_from_bytes(nested.fixed_bytes()).expect("nullable values");
-    assert_eq!(values, &[42]);
     assert_eq!(selected.column_offsets("arr").expect("offsets"), &[2]);
-    let handle = selected.column_handle("arr").expect("array handle");
-    let values = handle.as_ref().expect("handle").nested();
-    let values = values.as_ref().expect("array values");
-    let values = <[u32]>::ref_from_bytes(values.fixed_bytes()).expect("array values");
-    assert_eq!(values, &[1, 2]);
     assert_eq!(selected.column_str("lc", 0).expect("lc"), "x");
-    let handle = selected.column_handle("tup").expect("tuple handle");
-    let handle = handle.as_ref().expect("handle");
-    let left = handle.tuple_at(0);
-    let right = handle.tuple_at(1);
+    let scalar = client
+        .select_one(
+            "SELECT assumeNotNull(n) AS n_value, arr[1] AS arr_a, arr[2] AS arr_b, tup.1 AS \
+             tup_a, tup.2 AS tup_b FROM t02_all_types",
+        )
+        .expect("select composite values")
+        .expect("scalar block");
     assert_eq!(
-        <[u32]>::ref_from_bytes(left.as_ref().expect("left").fixed_bytes()).expect("left"),
-        &[7]
+        scalar
+            .column_to_vec::<u32>("n_value")
+            .expect("nullable value"),
+        [42]
     );
-    assert_eq!(right.as_ref().expect("right").string_at(0), b"t");
+    assert_eq!(
+        scalar
+            .column_to_vec::<u32>("arr_a")
+            .expect("first array value"),
+        [1]
+    );
+    assert_eq!(
+        scalar
+            .column_to_vec::<u32>("arr_b")
+            .expect("second array value"),
+        [2]
+    );
+    assert_eq!(
+        scalar.column_to_vec::<u32>("tup_a").expect("tuple value"),
+        [7]
+    );
+    assert_eq!(scalar.column_str("tup_b", 0).expect("tuple string"), "t");
     assert!(
         selected
             .column_type_name("m")
@@ -549,7 +551,9 @@ fn native_round_trip_geo_and_low_cardinality_numeric() {
         selected.column_type_name("mp").expect("mp type"),
         "MultiPolygon"
     );
-    let handle = selected.column_handle("lcu").expect("lcu handle");
-    let bytes = handle.as_ref().expect("lcu").item_bytes(0);
-    assert_eq!(u64::from_le_bytes(bytes.try_into().expect("u64")), 11);
+    let scalar = client
+        .select_one("SELECT toUInt64(lcu) AS value FROM t02_geo")
+        .expect("select low cardinality value")
+        .expect("scalar block");
+    assert_eq!(scalar.column_to_vec::<u64>("value").expect("value"), [11]);
 }
