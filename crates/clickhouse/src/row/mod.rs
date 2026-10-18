@@ -2,11 +2,14 @@
 mod client;
 mod field;
 mod memory;
+#[cfg(feature = "tcp")]
 pub(crate) mod native;
+#[cfg(feature = "tcp")]
+pub(crate) use native::to_native_block;
 mod owned;
+#[cfg(feature = "tcp")]
 mod wire_bridge;
 pub use client::RowClient;
-pub(crate) use native::to_native_block;
 pub use owned::{OwnedField, OwnedRow};
 mod composite;
 mod variable;

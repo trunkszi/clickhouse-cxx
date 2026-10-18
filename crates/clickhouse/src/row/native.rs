@@ -5,7 +5,7 @@
 //! supplies the fixed-width, String, Bool, Array, Nullable, and Map encodings.
 
 use super::wire_bridge;
-use crate::{Block, Client, NativeBlock, Result, error::Error, row::RowClient};
+use crate::{Block, NativeBlock, Result, error::Error};
 
 pub(crate) fn to_native_block(block: &Block) -> Result<NativeBlock> {
     let mut native = NativeBlock::new();
@@ -29,23 +29,4 @@ pub(crate) fn from_native(native: &NativeBlock) -> Result<Block> {
         block.append_column(column)?;
     }
     Ok(block)
-}
-
-impl RowClient for Client {
-    fn insert_block(&mut self, table: &str, block: &Block) -> Result<()> {
-        let mut native = to_native_block(block)?;
-        Client::insert_block(self, table, &mut native)
-    }
-
-    fn query_blocks(&mut self, sql: &str) -> Result<Vec<Block>> {
-        let native_blocks = self.query_native_blocks(sql)?;
-        let mut blocks = Vec::with_capacity(native_blocks.len());
-        for native in &native_blocks {
-            if native.rows() == 0 {
-                continue;
-            }
-            blocks.push(from_native(native)?);
-        }
-        Ok(blocks)
-    }
 }

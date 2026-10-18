@@ -10,6 +10,28 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// A failed operation never leaves an unknown session available for reuse.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An HTTP or binary payload violated its declared layout.
+    #[error("protocol: {0}")]
+    Protocol(Cow<'static, str>),
+    /// The HTTP endpoint returned a non-success response.
+    #[error("http status {status}: {message}")]
+    Http {
+        /// HTTP response status code.
+        status: u32,
+        /// Server diagnostic body.
+        message: String,
+    },
+    /// A synchronous socket or compression operation failed.
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    /// The curl transfer or configuration failed.
+    #[cfg(feature = "http")]
+    #[error("curl: {0}")]
+    Curl(String),
+    /// A wire type or operation is not supported by the selected codec.
+    #[error("unsupported: {0}")]
+    Unsupported(Cow<'static, str>),
+
     /// The endpoint text could not be parsed.
     #[error("invalid endpoint `{endpoint}`: {message}")]
     Endpoint {
@@ -115,6 +137,17 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn protocol(reason: impl Into<Cow<'static, str>>) -> Self {
+        Self::Protocol(reason.into())
+    }
+    pub(crate) fn unsupported(reason: impl Into<Cow<'static, str>>) -> Self {
+        Self::Unsupported(reason.into())
+    }
+    #[cfg(feature = "http")]
+    pub(crate) fn curl(error: impl std::fmt::Display) -> Self {
+        Self::Curl(format!("{error}"))
+    }
+
     pub(crate) fn endpoint(
         endpoint: Cow<'static, str>,
         message: impl Into<Cow<'static, str>>,
@@ -144,6 +177,7 @@ impl Error {
     }
 }
 
+#[cfg(feature = "tcp")]
 impl From<cxx::Exception> for Error {
     fn from(error: cxx::Exception) -> Self {
         Self::Native {

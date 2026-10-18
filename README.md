@@ -345,6 +345,61 @@ whose server-side outcome is uncertain.
 | JSON | `StringColumn::new_json()` | JSON column |
 | Nothing | `NothingColumn` | empty payload |
 
+## HTTP, RowBinary, and Arrow
+
+Enable `http` to compile the synchronous curl/rustls transport, LZ4/Zstd body
+compression, and HTTP client settings. Shared Block/Batch/View, serde conversion,
+Arrow IPC projection, and format codecs remain available in TCP-only and
+HTTP-only builds. A disabled transport returns an explicit error before IO.
+
+`Client::connect` accepts one `http://` or `https://` endpoint. Managed
+`ClientConfig` endpoint lists, Native TLS settings, and failover policies remain
+Native TCP/TCPS configuration; HTTP or mixed lists are rejected. HTTP setters
+return `Result` and reject Native clients when both transports are enabled.
+
+Cleartext HTTP prefers HTTP/2 while permitting HTTP/1.1 fallback from a bare
+ClickHouse listener. `HttpVersionChoice::Http2PriorKnowledge` requests h2c through
+an HTTP/2 frontend. `http_preferences()` describes requested options;
+`negotiated_http_version()` reports the observed response protocol. The HTTP
+transport validates that libcurl supports HTTP/2 and uses rustls.
+
+Typed `RowClient` operations encode shared `Block` columns as `FORMAT Native`.
+HTTP serde inserts use `Client::serde_insert_rows` with `FORMAT RowBinary`;
+`serde_query_rows(&Query)` requests `RowBinaryWithNamesAndTypes` and maps returned
+columns to serde fields by name. The block-based trait methods `insert_serde`
+and `query_serde` preserve their existing semantics. HTTP Native decoding supports
+fixed widths, String, Nullable, Array, and Map; unsupported layouts return errors
+rather than silently altering their representation.
+
+`set_compression` selects HTTP LZ4 or Zstd body compression. `Query::compression`
+overrides it for one request. Query settings and deduplication tokens are
+forwarded to the server; the destination table engine controls deduplication
+semantics. Statements and inserts are not automatically replayed on failure.
+
+For raw data, `fetch_bytes(&Query)` collects a response and
+`insert_formatted(&Query, &[u8])` sends the format specified by SQL. The raw
+incremental read APIs accept borrowed receivers and caller-owned destinations:
+
+- `query_raw_with(&Query, callback)` calls `FnMut(&[u8]) -> Result<()>` as chunks
+  arrive. A chunk may only be borrowed during that invocation. Receiver errors
+  abort the transfer and propagate unchanged.
+- `query_raw_into(&Query, &mut Vec<u8>)` clears length and reuses existing capacity.
+- `query_raw_into_slice(&Query, &mut [u8])` writes from offset zero and preserves
+  unused tail bytes. Overflow returns an error; an error may leave a partial
+  prefix, which must not be consumed as a complete response.
+
+Incremental raw delivery requires uncompressed responses and rejects configured
+compression. `select_http_stream(&Query)` instead fully buffers decoded shared
+blocks. `http_inserter(table)` stages shared blocks and sends them only at `end`;
+dropping it unfinished performs no insertion. These HTTP APIs do not replace
+Native `select_stream` and `inserter`, which retain their interactive session,
+cleanup, and caller-thread contracts.
+
+`ArrowBlockView::decode_stream` validates and owns decoded Arrow record batches;
+IPC parsing can allocate. Primitive slice and string projections borrow the
+decoded arrays without copying. Nullable primitive columns require validity-aware
+`column` access. Malformed IPC and trailing bytes return errors.
+
 ## Examples
 
 The tutorial under `crates/clickhouse/examples/` runs offline by default. Live
@@ -359,8 +414,9 @@ sections read `CLICKHOUSE_URL` (`tcp://127.0.0.1:9000`), `CLICKHOUSE_USER`,
 | `04_full_column_type_matrix` | All 17 column families, including wrappers, Geo, JSON, and Nothing. |
 | `05_dual_transport_and_row_client` | One `RowClient` surface over an in-memory transport and Native TCP. |
 | `06_serde_compatibility` | RowBinary and Block conversion, maps, logical types, and serde attributes. |
-| `07_streaming_and_callbacks` | Reserved walkthrough for the streaming and caller-buffer APIs exercised by examples 02 and 06. |
+| `07_thread_local_and_workers` | Thread-local factories and caller-thread worker slot leasing without sharing client handles. |
 | `08_tls_and_failover_policy` | Native TCPS trust, four endpoint policies, observers, and circuit diagnostics. |
+| `09_http2_rowbinary_and_arrow` | HTTP protocol selection, serde RowBinary, Arrow IPC projections, and incremental caller-owned response sinks. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -369,7 +425,9 @@ cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
 cargo run -p clickhouse --example 06_serde_compatibility
+cargo run -p clickhouse --example 07_thread_local_and_workers
 cargo run -p clickhouse --example 08_tls_and_failover_policy
+cargo run -p clickhouse --features http --example 09_http2_rowbinary_and_arrow
 ```
 
 The TLS example reads `CLICKHOUSE_TCPS_URLS` for its live section, with

@@ -1,70 +1,100 @@
-//! Endpoint parsing for the Native TCP transport.
+//! Endpoint parsing for synchronous Native TCP and HTTP transports.
 
 use std::borrow::Cow;
 
 use crate::error::Error;
 
-/// Native transport security mode.
+/// Wire protocol selected by a server endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scheme {
     /// ClickHouse Native TCP.
     Tcp,
     /// Native TCP encrypted with rustls.
     Tcps,
+    /// Cleartext HTTP.
+    Http,
+    /// HTTP protected by TLS.
+    Https,
 }
 
-/// A parsed Native TCP or TCPS host and port bound to its creating thread.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A parsed server endpoint with optional HTTP credentials and database.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     scheme: Scheme,
     host: Cow<'static, str>,
     port: u16,
+    user: Option<String>,
+    password: Option<String>,
+    database: Option<String>,
     thread_bound: std::marker::PhantomData<*const ()>,
 }
 
+impl std::fmt::Debug for Endpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Endpoint")
+            .field("scheme", &self.scheme)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("database", &self.database)
+            .finish()
+    }
+}
+
 impl Endpoint {
-    /// Rebuild an endpoint from validated parts.
+    /// Rebuild a validated endpoint for a calling-thread client factory.
+    #[cfg(feature = "tcp")]
     pub(crate) fn from_parts(scheme: Scheme, host: String, port: u16) -> Self {
         Self {
             scheme,
             host: Cow::Owned(host),
             port,
+            user: None,
+            password: None,
+            database: None,
             thread_bound: std::marker::PhantomData,
         }
     }
 
-    /// Parse `tcp://host[:port]` or `tcps://host[:port]`, defaulting to 9000 or 9440.
+    /// Parse `tcp://`, `tcps://`, `http://`, or `https://` server addresses.
+    ///
+    /// Ports default to 9000, 9440, 8123, and 8443 respectively.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Endpoint`] for empty text, a missing host, a
-    /// non-numeric or out-of-range port, or trailing path data. Returns
-    /// [`Error::UnsupportedScheme`] for schemes outside Native TCP and TCPS.
+    /// non-numeric or out-of-range port, or a Native TCP path. Returns
+    /// [`Error::UnsupportedScheme`] for any other scheme.
     pub fn parse(text: impl Into<Cow<'static, str>>) -> Result<Self, Error> {
         let text = text.into();
-        let scheme = if text.starts_with("tcps://") {
-            Scheme::Tcps
-        } else {
-            Scheme::Tcp
-        };
-        let parsed = parse_parts(&text);
+        let (address, user, password, database) = split_http_url(&text)?;
+        let parsed = parse_parts(address.as_ref());
         match parsed {
-            Ok((start, end, port)) => {
-                let host = match text {
-                    Cow::Borrowed(value) => Cow::Borrowed(&value[start..end]),
-                    Cow::Owned(value) => Cow::Owned(value[start..end].to_string()),
-                };
+            Ok((scheme, start, end, port)) => {
+                let host = Cow::Owned(address[start..end].to_owned());
                 Ok(Self {
                     scheme,
                     host,
                     port,
+                    user,
+                    password,
+                    database,
                     thread_bound: std::marker::PhantomData,
                 })
             }
             Err(ParseFailure::Scheme(scheme)) => Err(Error::UnsupportedScheme {
                 scheme: Cow::Owned(scheme),
             }),
-            Err(ParseFailure::Message(message)) => Err(Error::endpoint(text, message)),
+            Err(ParseFailure::Message(message)) => {
+                let diagnostic = if user.is_some() {
+                    Cow::Owned(address.into_owned())
+                } else {
+                    text
+                };
+                Err(Error::endpoint(diagnostic, message))
+            }
         }
     }
 
@@ -102,6 +132,20 @@ impl Endpoint {
     pub fn port(&self) -> u16 {
         self.port
     }
+    /// User supplied in an HTTP URL.
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    /// Password supplied in an HTTP URL.
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
+    /// Database supplied in an HTTP URL path.
+    pub fn database(&self) -> Option<&str> {
+        self.database.as_deref()
+    }
 }
 
 enum ParseFailure {
@@ -109,74 +153,108 @@ enum ParseFailure {
     Message(&'static str),
 }
 
-fn parse_parts(text: &str) -> Result<(usize, usize, u16), ParseFailure> {
-    let Some(rest) = text
-        .strip_prefix("tcp://")
-        .or_else(|| text.strip_prefix("tcps://"))
-    else {
-        if let Some((scheme, _)) = text.split_once("://") {
-            return Err(ParseFailure::Scheme(scheme.to_string()));
-        }
-        return Err(ParseFailure::Message(
-            "expected tcp://host:port or tcps://host:port",
-        ));
+fn parse_parts(text: &str) -> Result<(Scheme, usize, usize, u16), ParseFailure> {
+    let (name, rest) = text
+        .split_once("://")
+        .ok_or(ParseFailure::Message("expected scheme://host:port"))?;
+    let (scheme, default_port) = match name {
+        "tcp" => (Scheme::Tcp, 9000),
+        "tcps" => (Scheme::Tcps, 9440),
+        "http" => (Scheme::Http, 8123),
+        "https" => (Scheme::Https, 8443),
+        _ => return Err(ParseFailure::Scheme(name.to_owned())),
     };
     if rest.is_empty() {
         return Err(ParseFailure::Message("missing host"));
     }
-    let offset = text.len() - rest.len();
     if rest.contains(['/', '?', '#', '@']) || rest.chars().any(char::is_whitespace) {
         return Err(ParseFailure::Message(
-            "endpoint must contain only a host and port",
+            "endpoint must contain only a host and optional port",
         ));
     }
-    let default_port = if text.starts_with("tcps://") {
-        9440
-    } else {
-        9000
-    };
-    let (host, start, port_text) = if let Some(body) = rest.strip_prefix('[') {
-        let end = body.find(']').ok_or(ParseFailure::Message(
-            "IPv6 host is missing closing bracket",
-        ))?;
-        let tail = &body[end + 1..];
-        let port = if tail.is_empty() {
-            None
+    let offset = text.len() - rest.len();
+    let (host, port, host_offset) = if let Some(bracketed) = rest.strip_prefix('[') {
+        let (host, suffix) = bracketed
+            .split_once(']')
+            .ok_or(ParseFailure::Message("unterminated IPv6 address"))?;
+        host.parse::<std::net::Ipv6Addr>()
+            .map_err(|_| ParseFailure::Message("invalid IPv6 address"))?;
+        let port = if suffix.is_empty() {
+            default_port
         } else {
-            Some(
-                tail.strip_prefix(':')
-                    .ok_or(ParseFailure::Message("unexpected IPv6 suffix"))?,
-            )
+            parse_port(
+                suffix
+                    .strip_prefix(':')
+                    .ok_or(ParseFailure::Message("invalid IPv6 port suffix"))?,
+            )?
         };
-        (&body[..end], offset + 1, port)
+        (host, port, offset + 1)
     } else {
-        match rest.split_once(':') {
+        match rest.rsplit_once(':') {
             Some((host, port)) => {
-                if port.contains(':') {
-                    return Err(ParseFailure::Message("IPv6 host requires brackets"));
+                if host.contains(':') {
+                    return Err(ParseFailure::Message("IPv6 addresses require brackets"));
                 }
-                (host, offset, Some(port))
+                (host, parse_port(port)?, offset)
             }
-            None => (rest, offset, None),
+            None => (rest, default_port, offset),
         }
     };
     if host.is_empty() {
         return Err(ParseFailure::Message("missing host"));
     }
-    let port = match port_text {
-        None => default_port,
-        Some(value) => {
-            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(ParseFailure::Message("port is not numeric"));
-            }
-            let port = value
-                .parse::<u16>()
-                .map_err(|_| ParseFailure::Message("port is out of range"))?;
-            if port == 0 {
-                return Err(ParseFailure::Message("port must be nonzero"));
-            }
-            port
+    Ok((scheme, host_offset, host_offset + host.len(), port))
+}
+
+fn parse_port(text: &str) -> Result<u16, ParseFailure> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ParseFailure::Message("port is not numeric"));
+    }
+    let port = text
+        .parse::<u16>()
+        .map_err(|_| ParseFailure::Message("port is out of range"))?;
+    if port == 0 {
+        return Err(ParseFailure::Message("port must be nonzero"));
+    }
+    Ok(port)
+}
+
+type HttpUrlParts<'a> = (Cow<'a, str>, Option<String>, Option<String>, Option<String>);
+
+fn split_http_url(text: &str) -> Result<HttpUrlParts<'_>, Error> {
+    if !text.starts_with("http://") && !text.starts_with("https://") {
+        return Ok((Cow::Borrowed(text), None, None, None));
+    }
+    let (scheme, rest) = text
+        .split_once("://")
+        .ok_or_else(|| Error::protocol("missing URL scheme"))?;
+    let (authority, database) = match rest.split_once('/') {
+        Some((authority, database))
+            if !database.is_empty() && !database.contains(['/', '?', '#']) =>
+        {
+            (authority, Some(database.to_owned()))
         }
+        Some((authority, "")) => (authority, None),
+        Some(_) => return Err(Error::protocol("invalid HTTP database path")),
+        None => (rest, None),
     };
-    Ok((start, start + host.len(), port))
+    let (host, user, password) = match authority.rsplit_once('@') {
+        Some((info, host)) => {
+            let (user, password) = match info.split_once(':') {
+                Some((user, password)) => (user, Some(password.to_owned())),
+                None => (info, None),
+            };
+            if user.is_empty() {
+                return Err(Error::protocol("empty HTTP user"));
+            }
+            (host, Some(user.to_owned()), password)
+        }
+        None => (authority, None, None),
+    };
+    Ok((
+        Cow::Owned(format!("{scheme}://{host}")),
+        user,
+        password,
+        database,
+    ))
 }

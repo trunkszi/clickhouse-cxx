@@ -48,6 +48,7 @@ pub enum WireError {
     },
 }
 
+#[cfg(feature = "tcp")]
 impl From<cxx::Exception> for WireError {
     fn from(error: cxx::Exception) -> Self {
         Self::Native(error.what().to_owned())

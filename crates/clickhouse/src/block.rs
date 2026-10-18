@@ -38,12 +38,14 @@ impl Block {
     /// Copy supported row columns into a native transport block.
     /// # Errors
     /// Unsupported column types or native conversion failures return an error.
+    #[cfg(feature = "tcp")]
     pub fn to_native(&self) -> Result<crate::NativeBlock> {
         crate::row::native::to_native_block(self)
     }
     /// Copy supported columns from a native transport block into aligned buffers.
     /// # Errors
     /// Unsupported kinds or invalid native projections return an error.
+    #[cfg(feature = "tcp")]
     pub fn from_native(native: &crate::NativeBlock) -> Result<Self> {
         crate::row::native::from_native(native)
     }

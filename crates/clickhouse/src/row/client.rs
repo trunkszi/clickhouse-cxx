@@ -257,3 +257,12 @@ pub trait RowClient {
         Ok(written)
     }
 }
+
+impl RowClient for crate::Client {
+    fn insert_block(&mut self, table: &str, block: &Block) -> Result<()> {
+        self.insert_owned_block(table, block)
+    }
+    fn query_blocks(&mut self, sql: &str) -> Result<Vec<Block>> {
+        self.query_owned_blocks(sql)
+    }
+}

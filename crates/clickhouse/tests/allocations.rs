@@ -379,6 +379,7 @@ fn column_read_into_slice_does_not_allocate() {
 }
 
 /// Native fixed-width reads reuse the caller's slice without allocating a name.
+#[cfg(feature = "tcp")]
 #[test]
 fn native_slice_read_does_not_allocate() {
     let _guard = ALLOCATION_TEST_LOCK

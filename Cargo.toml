@@ -12,6 +12,12 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+curl = { git = "https://github.com/trunkszi/curl-rust.git", branch = "feat/event-loop-ws", default-features = false, features = ["http2"] }
+lz4_flex = { version = "0.11" }
+zstd = { version = "0.13" }
+arrow-array = { version = "60", default-features = false }
+arrow-ipc = { version = "60", default-features = false }
+arrow-schema = { version = "60", default-features = false }
 clickhouse-sys = { path = "crates/clickhouse-sys" }
 clickhouse-macros = { path = "crates/clickhouse-macros" }
 cmake = { version = "0.1" }

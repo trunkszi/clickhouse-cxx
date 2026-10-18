@@ -88,6 +88,19 @@ impl Server {
 }
 impl Drop for Server {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            match Command::new("docker")
+                .args(["logs", "--tail", "100", &self.id])
+                .output()
+            {
+                Ok(output) => eprintln!(
+                    "owned ClickHouse container diagnostics:\n{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                Err(error) => eprintln!("owned ClickHouse diagnostics failed: {error}"),
+            }
+        }
         match Command::new("docker")
             .args(["rm", "--force", &self.id])
             .output()
