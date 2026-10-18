@@ -164,10 +164,7 @@ impl Client {
     }
 }
 impl Managed {
-    pub(super) fn dial(
-        &mut self,
-        rotate: bool,
-    ) -> Result<cxx::UniquePtr<sys::ffi::Client>, Error> {
+    pub(super) fn dial(&mut self, rotate: bool) -> Result<cxx::UniquePtr<sys::ffi::Client>, Error> {
         let count = self.endpoints.len();
         let mut candidates: Vec<_> = (0..count)
             .filter(|&i| self.health[i].available(Instant::now()))
@@ -241,7 +238,9 @@ impl Managed {
     }
 }
 fn options(endpoint: &Endpoint, config: &ClientConfig<'_>) -> NativeOptions {
-    let connect_timeout = config.timeout.unwrap_or_else(|| config.tls.connect_timeout());
+    let connect_timeout = config
+        .timeout
+        .unwrap_or_else(|| config.tls.connect_timeout());
     let read_timeout = config.timeout.unwrap_or_else(|| config.tls.read_timeout());
     let write_timeout = config.timeout.unwrap_or_else(|| config.tls.write_timeout());
     NativeOptions {

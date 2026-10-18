@@ -10,15 +10,17 @@ bench = false
 
 [dependencies]
 clickhouse-macros = { workspace = true }
-clickhouse-sys = { workspace = true }
-cxx = { workspace = true }
+clickhouse-sys = { workspace = true, optional = true }
+cxx = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 zerocopy = { workspace = true }
 
 [features]
-default = []
+default = ["tcp"]
+tcp = ["dep:clickhouse-sys", "dep:cxx"]
+http = []
 tracing = ["dep:tracing"]
 
 [lints]

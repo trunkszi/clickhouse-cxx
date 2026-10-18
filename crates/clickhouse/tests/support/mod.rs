@@ -64,12 +64,11 @@ impl TestClickHouseContainer {
         fixture.endpoint = format!("tcp://127.0.0.1:{port}");
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            let config = ClientConfig {
-                password: "streaming-test".into(),
-                timeout: Duration::from_millis(500),
-                ..Default::default()
-            };
-            if let Ok(mut client) = Client::connect_with_config(&fixture.endpoint, config)
+            let config = ClientConfig::parse(&fixture.endpoint)
+                .expect("live endpoint")
+                .with_password("streaming-test")
+                .with_timeout(Duration::from_millis(500));
+            if let Ok(mut client) = Client::new(config)
                 && client.ping().is_ok()
             {
                 break;
@@ -81,13 +80,11 @@ impl TestClickHouseContainer {
     }
 
     pub fn client(&self, compression: CompressionMethod) -> Client {
-        Client::connect_with_config(
-            &self.endpoint,
-            ClientConfig {
-                password: "streaming-test".into(),
-                compression,
-                ..Default::default()
-            },
+        Client::new(
+            ClientConfig::parse(&self.endpoint)
+                .expect("live endpoint")
+                .with_password("streaming-test")
+                .with_compression(compression),
         )
         .expect("live ClickHouse connection")
     }

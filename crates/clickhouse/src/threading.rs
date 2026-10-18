@@ -10,7 +10,7 @@
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
         Arc,
@@ -21,7 +21,7 @@ use std::{
 
 use crate::{
     Block, Client, ClientConfig, CompressionMethod, Endpoint, EndpointSelection, Error,
-    FailoverPolicy, Result, TlsSettings, row::RowClient,
+    FailoverPolicy, Result, Scheme, TlsSettings, row::RowClient,
 };
 
 /// FNV-1a 64-bit offset basis.
@@ -37,7 +37,7 @@ pub enum WorkerBalance {
     RoundRobin,
     /// Use the local slot with the fewest active calls.
     ///
-    /// Ties go to the lowest slot index.
+    /// Ties rotate so synchronous calls still spread across slots.
     LeastInFlight,
     /// Hash an explicit request key with FNV-1a modulo the slot count.
     ///
@@ -87,10 +87,32 @@ impl PolicySnapshot {
     }
 }
 
+/// Thread-safe endpoint identity; [`Endpoint`] itself is `!Send` and `!Sync`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EndpointSpec {
+    scheme: Scheme,
+    host: String,
+    port: u16,
+}
+
+impl EndpointSpec {
+    fn capture(endpoint: &Endpoint) -> Self {
+        Self {
+            scheme: endpoint.scheme(),
+            host: endpoint.host().to_string(),
+            port: endpoint.port(),
+        }
+    }
+
+    fn restore(&self) -> Endpoint {
+        Endpoint::from_parts(self.scheme, self.host.clone(), self.port)
+    }
+}
+
 /// Owned connection settings shared by thread-local factories and worker handles.
 #[derive(Clone)]
 struct OwnedConfig {
-    endpoints: Vec<Endpoint>,
+    endpoints: Vec<EndpointSpec>,
     policy: PolicySnapshot,
     user: String,
     password: String,
@@ -138,7 +160,7 @@ impl OwnedConfig {
             }
         }
         Ok(Self {
-            endpoints: config.endpoints.clone(),
+            endpoints: config.endpoints.iter().map(EndpointSpec::capture).collect(),
             policy: PolicySnapshot::capture(&config.policy),
             user: config.user.to_string(),
             password: config.password.to_string(),
@@ -151,10 +173,14 @@ impl OwnedConfig {
         })
     }
 
-    fn to_config(&self, endpoints: Vec<Endpoint>) -> ClientConfig<'_> {
+    /// Rebuild a client configuration whose endpoint order starts at `rotate`.
+    fn to_config(&self, rotate: usize) -> ClientConfig<'_> {
+        let mut endpoints = self.endpoints.clone();
+        let count = endpoints.len();
+        endpoints.rotate_left(rotate % count);
         ClientConfig {
             callback: None,
-            endpoints,
+            endpoints: endpoints.iter().map(EndpointSpec::restore).collect(),
             policy: self.policy.restore(),
             user: Cow::Borrowed(self.user.as_str()),
             password: Cow::Borrowed(self.password.as_str()),
@@ -228,8 +254,12 @@ impl ThreadLocalClient {
     }
 
     /// Configured endpoint list; each thread dials it in this order.
-    pub fn endpoints(&self) -> &[Endpoint] {
-        &self.config.endpoints
+    pub fn endpoints(&self) -> Vec<Endpoint> {
+        self.config
+            .endpoints
+            .iter()
+            .map(EndpointSpec::restore)
+            .collect()
     }
 
     /// Run `f` against this thread's client, creating it on first use.
@@ -241,17 +271,17 @@ impl ThreadLocalClient {
     /// # Errors
     /// Returns a connection or closure error.
     ///
+    /// # Panics
+    /// Panics when called re-entrantly for the same factory on one thread.
+    ///
     /// [`with`]: Self::with
     pub fn with<R>(&self, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
         THREAD_CLIENTS.with(|cell| {
             let mut clients = cell.borrow_mut();
-            if !clients.contains_key(&self.id) {
-                let endpoints = self.config.endpoints.clone();
-                clients.insert(self.id, Client::new(self.config.to_config(endpoints))?);
-            }
-            let client = clients
-                .get_mut(&self.id)
-                .expect("thread-local client was inserted");
+            let client = match clients.entry(self.id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(Client::new(self.config.to_config(0))?),
+            };
             f(client)
         })
     }
@@ -308,12 +338,9 @@ impl PoolShared {
         self.leased[index].store(false, Ordering::Release);
     }
 
-    /// Rotate the configured endpoints so this worker starts on a distinct one.
-    fn striped(&self, worker_id: usize, slot: usize) -> Vec<Endpoint> {
-        let mut endpoints = self.config.endpoints.clone();
-        let count = endpoints.len();
-        endpoints.rotate_left((worker_id + slot) % count);
-        endpoints
+    /// Initial endpoint offset for one worker and local slot.
+    fn stripe(&self, worker_id: usize, slot: usize) -> usize {
+        (worker_id + slot) % self.config.endpoints.len()
     }
 }
 
@@ -346,11 +373,19 @@ impl LocalWorker {
         let slot = self.select(key);
         self.shared.dispatched[slot].fetch_add(1, Ordering::Relaxed);
         if self.slots[slot].is_none() {
-            let endpoints = self.shared.striped(self.worker_id, slot);
-            self.slots[slot] = Some(Client::new(self.shared.config.to_config(endpoints))?);
+            let rotation = self.shared.stripe(self.worker_id, slot);
+            self.slots[slot] = Some(Client::new(self.shared.config.to_config(rotation))?);
         }
         self.in_flight[slot] += 1;
-        let client = self.slots[slot].as_mut().expect("local slot was initialized");
+        let client = match self.slots[slot].as_mut() {
+            Some(client) => client,
+            None => {
+                self.in_flight[slot] -= 1;
+                return Err(Error::Config {
+                    reason: "local worker slot is unavailable".into(),
+                });
+            }
+        };
         let result = catch_unwind(AssertUnwindSafe(|| f(client)));
         self.in_flight[slot] -= 1;
         match result {
@@ -364,13 +399,16 @@ impl LocalWorker {
         match self.shared.balance {
             WorkerBalance::RoundRobin => self.round_robin(workers),
             WorkerBalance::LeastInFlight => {
-                let mut best = 0;
-                for index in 1..workers {
-                    if self.in_flight[index] < self.in_flight[best] {
-                        best = index;
+                let least = self.in_flight.iter().copied().min().unwrap_or(0);
+                // Synchronous calls never overlap on one thread, so ties are
+                // common. Rotate the tie-break to keep every slot in use.
+                for _ in 0..workers {
+                    let slot = self.round_robin(workers);
+                    if self.in_flight[slot] == least {
+                        return slot;
                     }
                 }
-                best
+                self.round_robin(workers)
             }
             WorkerBalance::KeyHash => match key {
                 Some(key) => (hash_key(key) % workers as u64) as usize,
@@ -380,6 +418,7 @@ impl LocalWorker {
     }
 
     fn round_robin(&mut self, workers: usize) -> usize {
+        let workers = workers.max(1);
         let slot = self.next % workers;
         self.next = self.next.wrapping_add(1);
         slot
@@ -451,6 +490,9 @@ impl WorkerClient {
     /// Returns [`Error::WorkerSlotsExhausted`] when every worker slot is leased
     /// by another live thread, or a connection or closure error.
     ///
+    /// # Panics
+    /// Panics when called re-entrantly for the same handle on one thread.
+    ///
     /// [`with`]: Self::with
     pub fn with<R>(&self, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
         self.with_worker(None, f)
@@ -458,9 +500,17 @@ impl WorkerClient {
 
     /// Run `f` against the slot selected by an explicit key.
     ///
+    /// The key participates in selection when [`balance`] is
+    /// [`WorkerBalance::KeyHash`]; other strategies ignore it.
+    ///
     /// # Errors
     /// Returns [`Error::WorkerSlotsExhausted`] when every worker slot is leased
     /// by another live thread, or a connection or closure error.
+    ///
+    /// [`balance`]: Self::balance
+    ///
+    /// # Panics
+    /// Panics when called re-entrantly for the same handle on one thread.
     pub fn with_keyed<R>(&self, key: u64, f: impl FnOnce(&mut Client) -> Result<R>) -> Result<R> {
         self.with_worker(Some(key), f)
     }
@@ -472,16 +522,15 @@ impl WorkerClient {
     ) -> Result<R> {
         LOCAL_WORKERS.with(|cell| {
             let mut workers = cell.borrow_mut();
-            if !workers.contains_key(&self.id) {
-                let worker_id = self
-                    .shared
-                    .lease()
-                    .ok_or(Error::WorkerSlotsExhausted {
+            let worker = match workers.entry(self.id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let worker_id = self.shared.lease().ok_or(Error::WorkerSlotsExhausted {
                         workers: self.shared.workers,
                     })?;
-                workers.insert(self.id, LocalWorker::new(self.shared.clone(), worker_id));
-            }
-            let worker = workers.get_mut(&self.id).expect("worker was inserted");
+                    entry.insert(LocalWorker::new(self.shared.clone(), worker_id))
+                }
+            };
             worker.dispatch(key, f)
         })
     }
@@ -515,7 +564,9 @@ impl WorkerClient {
     /// # Errors
     /// Returns a configuration, connection, query, or conversion error.
     pub fn query_blocks_keyed(&self, key: u64, sql: &str) -> Result<Vec<Block>> {
-        self.with_keyed(key, |client| <Client as RowClient>::query_blocks(client, sql))
+        self.with_keyed(key, |client| {
+            <Client as RowClient>::query_blocks(client, sql)
+        })
     }
 
     /// Insert one row-layer block on a balanced local slot.
