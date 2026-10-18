@@ -126,7 +126,7 @@ impl NullableColumn {
     }
 
     /// Nested column handle.
-    pub fn nested(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
+    pub(crate) fn nested(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
         self.handle.as_ref().map(|handle| handle.nested())
     }
 
@@ -206,11 +206,6 @@ impl ArrayColumn {
             .ok_or_else(|| WireError::Unsupported("Array column handle is null".to_owned()))?
             .array_append_row(values)
             .map_err(WireError::from)
-    }
-
-    /// Nested values column handle.
-    pub fn values(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
-        self.handle.as_ref().map(|handle| handle.nested())
     }
 
     /// Array offsets.
@@ -370,11 +365,6 @@ impl TupleColumn {
     /// Number of element columns.
     pub fn tuple_len(&self) -> usize {
         self.handle.as_ref().map_or(0, |handle| handle.tuple_len())
-    }
-
-    /// One element column handle.
-    pub fn child(&self, index: usize) -> Option<SharedPtr<sys::ColumnHandle>> {
-        self.handle.as_ref().map(|handle| handle.tuple_at(index))
     }
 
     /// Append fixed-width bytes to one element column.
@@ -708,5 +698,33 @@ impl Decimal256Column {
     /// Decimal scale.
     pub fn scale(&self) -> u32 {
         self.scale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LowCardinalityColumn;
+
+    #[test]
+    fn low_cardinality_int8_rejects_out_of_range_values() {
+        let mut column = LowCardinalityColumn::new("Int8").expect("Int8 dictionary");
+        assert!(column.append_i64(1000).is_err());
+        assert!(column.append_i64(127).is_ok());
+    }
+
+    #[test]
+    fn low_cardinality_uint8_rejects_out_of_range_values() {
+        let mut column = LowCardinalityColumn::new("UInt8").expect("UInt8 dictionary");
+        assert!(column.append_u64(256).is_err());
+        assert!(column.append_u64(255).is_ok());
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn low_cardinality_nullable_default_appends_null() {
+        let handle = crate::sys::new_column("LowCardinality(Nullable(Int64))").expect("LC column");
+        let column = handle.as_ref().expect("LC column handle");
+        column.append_default().expect("nullable default");
+        assert_eq!(column.size(), 1);
     }
 }

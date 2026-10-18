@@ -188,8 +188,12 @@ impl Column {
         let ColumnData::Fixed(bytes) = &self.data else {
             return Err(schema("expected a fixed-width column"));
         };
-        <[T]>::ref_from_bytes(bytes.as_bytes())
-            .map_err(|_| schema("fixed column alignment or width mismatch"))
+        let values = <[T]>::ref_from_bytes(bytes.as_bytes())
+            .map_err(|_| schema("fixed column alignment or width mismatch"))?;
+        if values.len() != self.rows {
+            return Err(schema("fixed column length does not match row count"));
+        }
+        Ok(values)
     }
     /// Copy a fixed-width column into a caller-provided slice.
     /// # Errors
@@ -212,7 +216,6 @@ impl Column {
         let ColumnData::Strings { offsets, bytes } = &self.data else {
             return Err(schema("expected string storage"));
         };
-        validate_offsets(offsets, bytes.len())?;
         let end = *offsets
             .get(row_idx)
             .ok_or_else(|| schema("string row is out of bounds"))? as usize;
@@ -354,5 +357,67 @@ impl MemoryBuffer for Column {
                 values.shrink_to_fit();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AlignedBytes, Column, ColumnData};
+
+    #[test]
+    fn slice_rejects_storage_shorter_than_row_count() {
+        let column = Column {
+            name: "value".into(),
+            type_name: "UInt64".into(),
+            data: ColumnData::Fixed(AlignedBytes::from_bytes(&7_u64.to_le_bytes())),
+            rows: 3,
+        };
+        assert!(column.slice::<u64>().is_err());
+    }
+
+    #[test]
+    fn slice_accepts_storage_matching_row_count() {
+        let column = Column {
+            name: "value".into(),
+            type_name: "UInt64".into(),
+            data: ColumnData::Fixed(AlignedBytes::from_bytes(&7_u64.to_le_bytes())),
+            rows: 1,
+        };
+        assert_eq!(column.slice::<u64>().expect("one row"), [7]);
+    }
+
+    #[test]
+    fn read_bytes_into_checks_only_the_requested_row() {
+        let column = Column {
+            name: "value".into(),
+            type_name: "String".into(),
+            data: ColumnData::Strings {
+                offsets: vec![5, 9, 12],
+                bytes: b"helloworld!!".to_vec(),
+            },
+            rows: 3,
+        };
+        let mut dst = Vec::new();
+
+        assert_eq!(column.read_bytes_into(0, &mut dst).expect("row 0"), 5);
+        assert_eq!(dst, b"hello".to_vec());
+
+        dst.extend_from_slice(b"stale");
+        assert_eq!(column.read_bytes_into(1, &mut dst).expect("row 1"), 4);
+        assert_eq!(dst, b"worl".to_vec());
+
+        assert!(column.read_bytes_into(3, &mut dst).is_err());
+
+        let nonmonotonic = Column {
+            name: "value".into(),
+            type_name: "String".into(),
+            data: ColumnData::Strings {
+                offsets: vec![5, 3],
+                bytes: b"helloworld".to_vec(),
+            },
+            rows: 2,
+        };
+        assert_eq!(nonmonotonic.read_bytes_into(0, &mut dst).expect("row 0"), 5);
+        assert!(nonmonotonic.read_bytes_into(1, &mut dst).is_err());
     }
 }

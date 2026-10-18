@@ -24,6 +24,7 @@ constexpr uint32_t KIND_I64 = 8;
 constexpr uint32_t KIND_F32 = 9;
 constexpr uint32_t KIND_F64 = 10;
 constexpr uint32_t KIND_STRING = 11;
+constexpr uint32_t KIND_FIXED_STRING = 12;
 
 std::string to_std(rust::Str text) {
     return std::string(text.data(), text.size());
@@ -89,6 +90,9 @@ uint32_t kind_of(const clickhouse::ColumnRef& column) {
     if (numeric<double>(column)) return KIND_F64;
     if (std::dynamic_pointer_cast<clickhouse::ColumnString>(column)) {
         return KIND_STRING;
+    }
+    if (std::dynamic_pointer_cast<clickhouse::ColumnFixedString>(column)) {
+        return KIND_FIXED_STRING;
     }
     return 0;
 }
@@ -166,14 +170,32 @@ rust::Slice<const uint8_t> bytes_of(const clickhouse::ColumnRef& column,
 
 }  // namespace
 
+clickhouse::ClientOptions base_client_options(const std::string& host, uint16_t port,
+                                              const std::string& user,
+                                              const std::string& password,
+                                              const std::string& database) {
+    clickhouse::ClientOptions options;
+    options.SetHost(host);
+    options.SetPort(port);
+    options.SetUser(user);
+    options.SetPassword(password);
+    options.SetDefaultDatabase(database);
+    return options;
+}
+
+void apply_compression(clickhouse::ClientOptions& options, std::uint8_t method) {
+    switch (method) {
+        case 0: options.SetCompressionMethod(clickhouse::CompressionMethod::None); break;
+        case 1: options.SetCompressionMethod(clickhouse::CompressionMethod::LZ4); break;
+        case 2: options.SetCompressionMethod(clickhouse::CompressionMethod::ZSTD); break;
+        default: throw std::invalid_argument("unknown block compression method");
+    }
+}
+
 Client::Client(rust::Str host, uint16_t port, rust::Str user, rust::Str password,
                rust::Str database) {
-    clickhouse::ClientOptions options;
-    options.SetHost(to_std(host));
-    options.SetPort(port);
-    options.SetUser(to_std(user));
-    options.SetPassword(to_std(password));
-    options.SetDefaultDatabase(to_std(database));
+    clickhouse::ClientOptions options = base_client_options(
+        to_std(host), port, to_std(user), to_std(password), to_std(database));
     options.SetRethrowException(true);
     inner_ = std::make_unique<clickhouse::Client>(options);
 }
@@ -340,9 +362,12 @@ void block_append_string_flat(Block& block, rust::Str name,
 }
 
 rust::Vec<uint64_t> block_column_string_offsets(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return rust::Vec<uint64_t>();
+    }
     auto column = std::dynamic_pointer_cast<clickhouse::ColumnString>(block.inner().At(index));
     if (!column) {
-        throw std::runtime_error("column is not a String column");
+        return rust::Vec<uint64_t>();
     }
     rust::Vec<uint64_t> offsets;
     uint64_t total = 0;
@@ -354,9 +379,12 @@ rust::Vec<uint64_t> block_column_string_offsets(const Block& block, size_t index
 }
 
 rust::Vec<uint8_t> block_column_string_flat(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return rust::Vec<uint8_t>();
+    }
     auto column = std::dynamic_pointer_cast<clickhouse::ColumnString>(block.inner().At(index));
     if (!column) {
-        throw std::runtime_error("column is not a String column");
+        return rust::Vec<uint8_t>();
     }
     rust::Vec<uint8_t> bytes;
     for (size_t row = 0; row < column->Size(); ++row) {
@@ -378,24 +406,50 @@ size_t block_columns(const Block& block) {
     return block.inner().GetColumnCount();
 }
 
+// These accessors return non-Result cxx types, so a thrown exception would
+// cross the FFI boundary instead of becoming a Rust error. Out-of-range
+// indices therefore answer empty/zero rather than throwing.
 rust::String block_column_name(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return rust::String();
+    }
     return rust::String(block.inner().GetColumnName(index));
 }
 
 uint32_t block_column_kind(const Block& block, size_t index) {
-    return kind_of(block.inner().At(index));
+    if (index >= block.inner().GetColumnCount()) {
+        return 0;
+    }
+    auto column = block.inner().At(index);
+    if (!column) {
+        return 0;
+    }
+    return kind_of(column);
 }
 
 rust::Slice<const uint8_t> block_column_bytes(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return rust::Slice<const uint8_t>(nullptr, 0);
+    }
     auto column = block.inner().At(index);
-    return bytes_of(column, kind_of(column));
+    if (!column) {
+        return rust::Slice<const uint8_t>(nullptr, 0);
+    }
+    const uint32_t kind = kind_of(column);
+    if (kind == 0 || kind == KIND_STRING || kind == KIND_FIXED_STRING) {
+        return rust::Slice<const uint8_t>(nullptr, 0);
+    }
+    return bytes_of(column, kind);
 }
 
 rust::Vec<rust::String> block_column_strings(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return rust::Vec<rust::String>();
+    }
     auto column =
         std::dynamic_pointer_cast<clickhouse::ColumnString>(block.inner().At(index));
     if (!column) {
-        throw std::runtime_error("column is not a String column");
+        return rust::Vec<rust::String>();
     }
     rust::Vec<rust::String> values;
     for (size_t row = 0; row < column->Size(); ++row) {
@@ -405,6 +459,9 @@ rust::Vec<rust::String> block_column_strings(const Block& block, size_t index) {
 }
 
 size_t block_column_capacity(const Block& block, size_t index) {
+    if (index >= block.inner().GetColumnCount()) {
+        return 0;
+    }
     auto column = block.inner().At(index);
     switch (kind_of(column)) {
         case KIND_U8:

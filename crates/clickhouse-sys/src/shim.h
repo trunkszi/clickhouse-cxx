@@ -6,7 +6,9 @@
 #include "shim_matrix.h"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace chcxx {
@@ -41,11 +43,24 @@ public:
     std::uint8_t* context = nullptr;
     const EventCallback* callback = nullptr;
     clickhouse::ExternalTables external;
+    // `ExternalTable::name` is a string_view, so the name must outlive the
+    // select call. A deque keeps earlier elements at a stable address when a
+    // later add_external grows the store.
+    std::deque<std::string> external_names;
     bool emit(const NativeEvent& event);
 
 private:
     std::unique_ptr<clickhouse::Client> inner_;
 };
+
+/// Connection fields shared by every client construction path.
+clickhouse::ClientOptions base_client_options(const std::string& host, uint16_t port,
+                                              const std::string& user,
+                                              const std::string& password,
+                                              const std::string& database);
+
+/// Map the FFI compression tag to a clickhouse-cpp method.
+void apply_compression(clickhouse::ClientOptions& options, std::uint8_t method);
 
 /// A sink that exists only during one synchronous FFI call, including unwinding.
 struct EventScope {

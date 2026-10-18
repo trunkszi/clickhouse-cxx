@@ -1,6 +1,8 @@
 #include "shim_matrix.h"
 
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -84,13 +86,35 @@ bool append_low_cardinality_string(const clickhouse::ColumnRef& target, std::str
     return true;
 }
 
-template <typename T>
-bool append_low_cardinality_int(const clickhouse::ColumnRef& target, T value) {
+// The value type of the dictionary column decides the width; casting the wide
+// input before that type is known would silently truncate, e.g. 1000 into an
+// Int8 dictionary. Only the matching instantiation reaches the range check.
+// ColumnLowCardinality exposes no public ItemView append; the typed wrapper's
+// Append(std::nullopt) reaches the NULL dictionary item for a Nullable
+// dictionary. Wrap() shares the underlying dictionary, so this mutates the
+// original column.
+template <typename Dictionary>
+bool append_low_cardinality_null(const clickhouse::ColumnRef& target) {
+    auto typed = target->As<clickhouse::ColumnLowCardinalityT<Dictionary>>();
+    if (!typed) {
+        return false;
+    }
+    typed->Append(std::nullopt);
+    return true;
+}
+
+template <typename T, typename Wide>
+bool append_low_cardinality_int(const clickhouse::ColumnRef& target, Wide value) {
     auto typed = target->As<clickhouse::ColumnLowCardinalityT<clickhouse::ColumnVector<T>>>();
     if (!typed) {
         return false;
     }
-    typed->Append(value);
+    if (value < static_cast<Wide>(std::numeric_limits<T>::min()) ||
+        value > static_cast<Wide>(std::numeric_limits<T>::max())) {
+        throw std::invalid_argument(
+            "low cardinality integer value out of range for dictionary column");
+    }
+    typed->Append(static_cast<T>(value));
     return true;
 }
 
@@ -188,9 +212,9 @@ void ColumnHandle::low_cardinality_append_string(rust::Slice<const uint8_t> valu
 }
 
 void ColumnHandle::low_cardinality_append_i64(std::int64_t value) const {
-    if (append_low_cardinality_int<std::int8_t>(column_, static_cast<std::int8_t>(value)) ||
-        append_low_cardinality_int<std::int16_t>(column_, static_cast<std::int16_t>(value)) ||
-        append_low_cardinality_int<std::int32_t>(column_, static_cast<std::int32_t>(value)) ||
+    if (append_low_cardinality_int<std::int8_t>(column_, value) ||
+        append_low_cardinality_int<std::int16_t>(column_, value) ||
+        append_low_cardinality_int<std::int32_t>(column_, value) ||
         append_low_cardinality_int<std::int64_t>(column_, value)) {
         return;
     }
@@ -198,9 +222,9 @@ void ColumnHandle::low_cardinality_append_i64(std::int64_t value) const {
 }
 
 void ColumnHandle::low_cardinality_append_u64(std::uint64_t value) const {
-    if (append_low_cardinality_int<std::uint8_t>(column_, static_cast<std::uint8_t>(value)) ||
-        append_low_cardinality_int<std::uint16_t>(column_, static_cast<std::uint16_t>(value)) ||
-        append_low_cardinality_int<std::uint32_t>(column_, static_cast<std::uint32_t>(value)) ||
+    if (append_low_cardinality_int<std::uint8_t>(column_, value) ||
+        append_low_cardinality_int<std::uint16_t>(column_, value) ||
+        append_low_cardinality_int<std::uint32_t>(column_, value) ||
         append_low_cardinality_int<std::uint64_t>(column_, value)) {
         return;
     }
@@ -265,8 +289,35 @@ void ColumnHandle::append_default() const {
                 return;
             }
             case Code::Nullable:
-                low_cardinality_append_string(rust::Slice<const uint8_t>(nullptr, 0));
-                return;
+                if (append_low_cardinality_null<
+                        clickhouse::ColumnNullableT<clickhouse::ColumnString>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnFixedString>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::int8_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::int16_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::int32_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::int64_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::uint8_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::uint16_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::uint32_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<std::uint64_t>>>(column_) ||
+                    append_low_cardinality_null<clickhouse::ColumnNullableT<
+                        clickhouse::ColumnVector<float>>>(column_) ||
+                    append_low_cardinality_null<
+                        clickhouse::ColumnNullableT<clickhouse::ColumnVector<double>>>(
+                        column_)) {
+                    return;
+                }
+                throw std::invalid_argument(
+                    "unsupported LowCardinality nullable dictionary type");
             default:
                 low_cardinality_append_i64(0);
                 return;

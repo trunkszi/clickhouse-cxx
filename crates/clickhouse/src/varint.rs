@@ -53,3 +53,44 @@ fn read_varu64(mut next: impl FnMut() -> Result<u8, Error>) -> Result<u64, Error
         shift += 7;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{read_varu64_slice, write_varu64};
+    use crate::error::Error;
+
+    fn decode(bytes: &[u8]) -> Result<u64, Error> {
+        read_varu64_slice(&mut &bytes[..])
+    }
+
+    #[test]
+    fn writes_known_encodings() {
+        let mut out = Vec::new();
+        write_varu64(&mut out, 0);
+        assert_eq!(out, [0]);
+
+        out.clear();
+        write_varu64(&mut out, 300);
+        assert_eq!(out, [0xac, 0x02]);
+    }
+
+    #[test]
+    fn round_trips_u64_max() {
+        let mut out = Vec::new();
+        write_varu64(&mut out, u64::MAX);
+        assert_eq!(out.len(), 10);
+        assert_eq!(decode(&out).expect("u64::MAX round-trip"), u64::MAX);
+    }
+
+    #[test]
+    fn rejects_truncated_input() {
+        assert!(decode(&[0x80]).is_err());
+    }
+
+    #[test]
+    fn rejects_overlong_encoding() {
+        let mut bytes = vec![0x80; 10];
+        bytes.push(0x00);
+        assert!(decode(&bytes).is_err());
+    }
+}
