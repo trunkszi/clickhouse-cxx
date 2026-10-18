@@ -1,5 +1,7 @@
 //! Nullable, Array, LowCardinality, Tuple, Map, Geo, Nothing, and Decimal256 columns.
 
+use std::marker::PhantomData;
+
 use clickhouse_sys as sys;
 use cxx::{SharedPtr, UniquePtr};
 use zerocopy::IntoBytes;
@@ -11,6 +13,7 @@ use crate::wire_error::{WireError, WireResult};
 pub struct NullableColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     nested_type: String,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl NullableColumn {
@@ -26,6 +29,7 @@ impl NullableColumn {
         Ok(Self {
             handle,
             nested_type,
+            _not_send: PhantomData,
         })
     }
 
@@ -169,6 +173,7 @@ impl NullableColumn {
 pub struct ArrayColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     item_type: String,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl ArrayColumn {
@@ -183,6 +188,7 @@ impl ArrayColumn {
         Ok(Self {
             handle,
             item_type: item_type.to_owned(),
+            _not_send: PhantomData,
         })
     }
 
@@ -251,6 +257,7 @@ impl ArrayColumn {
 /// A LowCardinality wrapper.
 pub struct LowCardinalityColumn {
     handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl LowCardinalityColumn {
@@ -263,6 +270,7 @@ impl LowCardinalityColumn {
         let name = format!("LowCardinality({inner_type})");
         Ok(Self {
             handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
         })
     }
 
@@ -337,6 +345,7 @@ impl LowCardinalityColumn {
 /// A Tuple column.
 pub struct TupleColumn {
     handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl TupleColumn {
@@ -354,6 +363,7 @@ impl TupleColumn {
         let name = format!("Tuple({})", element_types.join(", "));
         Ok(Self {
             handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
         })
     }
 
@@ -425,6 +435,7 @@ impl TupleColumn {
 /// A Map column.
 pub struct MapColumn {
     handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl MapColumn {
@@ -437,6 +448,7 @@ impl MapColumn {
         let name = format!("Map({key_type}, {value_type})");
         Ok(Self {
             handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
         })
     }
 
@@ -516,6 +528,7 @@ impl GeoKind {
 pub struct GeoColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     kind: GeoKind,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl GeoColumn {
@@ -528,6 +541,7 @@ impl GeoColumn {
         Ok(Self {
             handle: sys::new_column(kind.type_name())?,
             kind,
+            _not_send: PhantomData,
         })
     }
 
@@ -586,6 +600,7 @@ impl GeoColumn {
 /// A Nothing column.
 pub struct NothingColumn {
     handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl NothingColumn {
@@ -597,6 +612,7 @@ impl NothingColumn {
     pub fn new() -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_column("Void")?,
+            _not_send: PhantomData,
         })
     }
 
@@ -646,6 +662,7 @@ impl NothingColumn {
 pub struct Decimal256Column {
     scale: u32,
     values: Vec<[u8; 32]>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl Decimal256Column {
@@ -654,6 +671,7 @@ impl Decimal256Column {
         Self {
             scale,
             values: Vec::new(),
+            _not_send: PhantomData,
         }
     }
 

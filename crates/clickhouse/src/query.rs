@@ -1,6 +1,6 @@
 //! Borrowed query metadata and synchronous server event handlers.
 
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{borrow::Cow, collections::BTreeMap, marker::PhantomData};
 
 use crate::NativeBlock;
 
@@ -148,6 +148,8 @@ pub struct Query<'a> {
     pub(crate) on_profile_events: Option<BlockHandler<'a>>,
     pub(crate) on_server_log: Option<BlockHandler<'a>>,
     pub(crate) on_exception: Option<ExceptionHandler<'a>>,
+    /// Callbacks run on the thread that advances the query; the request is not Send.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<'a> Query<'a> {
@@ -172,6 +174,7 @@ impl<'a> Query<'a> {
             on_profile_events: None,
             on_server_log: None,
             on_exception: None,
+            _not_send: PhantomData,
         }
     }
 

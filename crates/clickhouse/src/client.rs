@@ -180,6 +180,7 @@ impl Client {
             client: self,
             query,
             active: true,
+            _not_send: PhantomData,
         })
     }
 
@@ -385,6 +386,7 @@ impl Client {
                 client: self,
                 schema: NativeBlock::from_inner(inner),
                 active: true,
+                _not_send: PhantomData,
             }),
             Err(error) => {
                 self.recover();

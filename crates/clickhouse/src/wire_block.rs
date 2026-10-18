@@ -1,6 +1,6 @@
 //! A column-oriented ClickHouse block backed by the native client.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, marker::PhantomData};
 
 use clickhouse_sys as sys;
 use cxx::{SharedPtr, UniquePtr};
@@ -18,6 +18,8 @@ pub struct WireBlock {
     /// Cached column wrappers keep their aligned projection caches alive for
     /// as long as the returned slices borrow this block.
     handles: RefCell<Vec<Option<SharedPtr<sys::ColumnHandle>>>>,
+    /// The block and its column handles are single-threaded.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl WireBlock {
@@ -40,6 +42,7 @@ impl WireBlock {
             handle,
             names,
             handles: RefCell::new(vec![None; count]),
+            _not_send: PhantomData,
         })
     }
 
