@@ -38,3 +38,26 @@ starts `clickhouse/clickhouse-server:26.8.2.7` on ephemeral Native and HTTP port
 uses a controlled synchronous HTTP RowBinary fixture, verifies all four typed
 client operations, and removes its owned container on Drop. This fixture is not
 a replacement for integrated Native/HTTP transport tests.
+
+## Examples & Tutorials
+
+The runnable tutorial lives in `examples/`. Every example runs without a
+server; examples with a live section read `CLICKHOUSE_URL` (for example
+`tcp://127.0.0.1:9000`) and optional `CLICKHOUSE_USER`,
+`CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE` values.
+
+| Example | Topic |
+| :--- | :--- |
+| `01_quickstart_native_tcp` | `Block` and `CppBlock` construction, schema inspection, zero-copy fixed-width projections, optional `Client` round-trip. |
+| `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes, borrowed `Cow`/`Option`/`Vec`/`BTreeMap` fields, generated `Batch`, `BlockView`, and `Ref`. |
+| `03_memory_policy_and_batch_reuse` | `.clear()` capacity reuse, steady-state refills, burst trimming, and a `BufferPolicy` teaching model. |
+| `04_full_column_type_matrix` | All column families from numeric and Bool through Nullable, Array, Tuple, Map, Geo, JSON, and Nothing. |
+| `05_dual_transport_and_row_client` | `RowClient` over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map rows. |
+
+```bash
+cargo run -p clickhouse --example 01_quickstart_native_tcp
+cargo run -p clickhouse --example 02_derive_row_and_zero_copy_views
+cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
+cargo run -p clickhouse --example 04_full_column_type_matrix
+cargo run -p clickhouse --example 05_dual_transport_and_row_client
+```
