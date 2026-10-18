@@ -64,6 +64,10 @@ pub fn expand(model: Model) -> TokenStream {
             }
             fn shrink_to_fit(&mut self){#(#runtime::MemoryBuffer::shrink_to_fit(&mut self.#names);)*}
             fn push(&mut self,row:&Self::Row){self.push_ref(#row_ref{#(#names:#borrow),*});}
+            fn push_ref<'__a>(&mut self,row:<<Self::Row as #runtime::Row>::View<'__a> as #runtime::BlockView<'__a>>::Ref){
+                let row:#row_ref<'__a>=row;
+                #(<#types as #runtime::row::Field>::push(&mut self.#names,row.#names);)*
+            }
             fn to_block(&self)->#runtime::Result<#runtime::Block>{let mut block=#runtime::Block::with_capacity(#field_count,self.len());#(block.append_column(<#types as #runtime::row::Field>::column(&self.#names,#columns)?)?;)*Ok(block)}
         }
         impl #impl_generics #batch #type_generics #where_clause{

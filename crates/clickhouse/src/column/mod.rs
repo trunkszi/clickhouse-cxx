@@ -183,6 +183,43 @@ impl Column {
         <[T]>::ref_from_bytes(bytes.as_bytes())
             .map_err(|_| schema("fixed column alignment or width mismatch"))
     }
+    /// Copy a fixed-width column into a caller-provided slice.
+    /// # Errors
+    /// Wrong storage, width, alignment, or a short destination rejects the copy.
+    pub fn read_into_slice<T: FromBytes + Immutable + KnownLayout + Copy>(
+        &self,
+        dst: &mut [T],
+    ) -> Result<usize> {
+        let src = self.slice::<T>()?;
+        if dst.len() < src.len() {
+            return Err(schema("destination slice is too small for the column"));
+        }
+        dst[..src.len()].copy_from_slice(src);
+        Ok(src.len())
+    }
+    /// Copy one string row into a caller-provided byte buffer.
+    /// # Errors
+    /// Wrong storage, invalid offsets, or an out-of-range row rejects the copy.
+    pub fn read_bytes_into(&self, row_idx: usize, dst: &mut Vec<u8>) -> Result<usize> {
+        let ColumnData::Strings { offsets, bytes } = &self.data else {
+            return Err(schema("expected string storage"));
+        };
+        validate_offsets(offsets, bytes.len())?;
+        let end = *offsets
+            .get(row_idx)
+            .ok_or_else(|| schema("string row is out of bounds"))? as usize;
+        let start = if row_idx == 0 {
+            0
+        } else {
+            offsets[row_idx - 1] as usize
+        };
+        let row = bytes
+            .get(start..end)
+            .ok_or_else(|| schema("invalid string row bounds"))?;
+        dst.clear();
+        dst.extend_from_slice(row);
+        Ok(row.len())
+    }
     /// Exact capacity in bytes of every nested value Vec.
     pub fn allocated_bytes(&self) -> usize {
         MemoryBuffer::allocated_bytes(self)

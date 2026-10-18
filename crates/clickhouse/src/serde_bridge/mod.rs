@@ -44,6 +44,60 @@ impl SerdeBridge {
         rowbinary::from_rowbinary(bytes)
     }
 
+    /// Decode RowBinary rows one at a time and pass each owned value to
+    /// `on_row`.
+    ///
+    /// No intermediate `Vec` is allocated. The returned count is the number of
+    /// values delivered, and a callback error stops decoding and is returned
+    /// unchanged. Rows already delivered stay delivered.
+    ///
+    /// # Errors
+    ///
+    /// Truncated input, trailing partial rows, a value that does not match
+    /// `T`, or a callback error returns an error.
+    pub fn from_rowbinary_with<T, F>(bytes: &[u8], on_row: F) -> Result<usize, Error>
+    where
+        T: serde::de::DeserializeOwned,
+        F: FnMut(T) -> Result<(), Error>,
+    {
+        rowbinary::from_rowbinary_with(bytes, on_row)
+    }
+
+    /// Decode concatenated RowBinary rows and append them to `dst`.
+    ///
+    /// Existing elements are kept and no intermediate `Vec` is allocated. The
+    /// returned count is the number of rows appended; on a decoding error the
+    /// rows decoded before the error remain appended.
+    ///
+    /// # Errors
+    ///
+    /// Truncated input, trailing partial rows, or a value that does not match
+    /// `T` returns an error.
+    pub fn from_rowbinary_into<T: serde::de::DeserializeOwned>(
+        bytes: &[u8],
+        dst: &mut Vec<T>,
+    ) -> Result<usize, Error> {
+        rowbinary::from_rowbinary_into(bytes, dst)
+    }
+
+    /// Decode RowBinary rows into `dst` starting at index zero.
+    ///
+    /// No intermediate `Vec` is allocated. Every written slot is overwritten
+    /// and its previous value dropped; slots past the returned count are left
+    /// untouched. The input must not contain more rows than `dst.len()`; when
+    /// that limit is exceeded, slots filled before the error stay overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Input with more rows than `dst.len()`, truncated input, trailing
+    /// partial rows, or a value that does not match `T` returns an error.
+    pub fn from_rowbinary_into_slice<T: serde::de::DeserializeOwned>(
+        bytes: &[u8],
+        dst: &mut [T],
+    ) -> Result<usize, Error> {
+        rowbinary::from_rowbinary_into_slice(bytes, dst)
+    }
+
     /// Build a block whose columns are inferred from serde struct fields.
     ///
     /// Field names become column names. `Option<T>` becomes `Nullable(T)` and
@@ -67,6 +121,59 @@ impl SerdeBridge {
     /// maps, and invalid array offsets return an error.
     pub fn block_to_rows<T: serde::de::DeserializeOwned>(block: &Block) -> Result<Vec<T>, Error> {
         block_read::block_to_rows(block)
+    }
+
+    /// Deserialize block rows one at a time and pass each owned value to
+    /// `on_row`.
+    ///
+    /// No intermediate `Vec` is allocated. The returned count is the number of
+    /// values delivered, and a callback error stops decoding and is returned
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Missing fields, incompatible column shapes, or a callback error returns
+    /// an error.
+    pub fn block_to_rows_with<T, F>(block: &Block, on_row: F) -> Result<usize, Error>
+    where
+        T: serde::de::DeserializeOwned,
+        F: FnMut(T) -> Result<(), Error>,
+    {
+        block_read::block_to_rows_with(block, on_row)
+    }
+
+    /// Deserialize block rows and append them to `dst`.
+    ///
+    /// Existing elements are kept and no intermediate `Vec` is allocated. The
+    /// returned count is the number of rows appended; on a decoding error the
+    /// rows decoded before the error remain appended.
+    ///
+    /// # Errors
+    ///
+    /// Missing fields or incompatible column shapes return an error.
+    pub fn block_to_rows_into<T: serde::de::DeserializeOwned>(
+        block: &Block,
+        dst: &mut Vec<T>,
+    ) -> Result<usize, Error> {
+        block_read::block_to_rows_into(block, dst)
+    }
+
+    /// Deserialize block rows into `dst` starting at index zero.
+    ///
+    /// No intermediate `Vec` is allocated. Every written slot is overwritten
+    /// and its previous value dropped; slots past the returned count are left
+    /// untouched. A block with more rows than `dst.len()` is rejected before
+    /// any slot is written.
+    ///
+    /// # Errors
+    ///
+    /// A block with more rows than `dst.len()`, missing fields, or
+    /// incompatible column shapes returns an error.
+    pub fn block_to_rows_into_slice<T: serde::de::DeserializeOwned>(
+        block: &Block,
+        dst: &mut [T],
+    ) -> Result<usize, Error> {
+        block_read::block_to_rows_into_slice(block, dst)
     }
 }
 

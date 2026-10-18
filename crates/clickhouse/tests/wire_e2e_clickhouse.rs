@@ -3,6 +3,7 @@
 use std::{
     net::{TcpStream, ToSocketAddrs},
     process::Command,
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,13 +21,16 @@ struct ClickHouseContainer {
     native_port: u16,
 }
 
+static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 impl ClickHouseContainer {
     fn start() -> Self {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let name = format!("chcxx-t02-{}-{stamp}", std::process::id());
+        let sequence = CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let name = format!("chcxx-t02-{}-{stamp}-{sequence}", std::process::id());
         let output = Command::new("docker")
             .args([
                 "run",
