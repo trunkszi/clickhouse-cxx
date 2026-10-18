@@ -3,7 +3,7 @@
 use cxx::{SharedPtr, UniquePtr};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-use crate::{CppColumn, error::Error, sys};
+use crate::{WireColumn, error::Error, sys};
 
 const KIND_U8: u32 = 1;
 const KIND_U16: u32 = 2;
@@ -248,7 +248,7 @@ impl NativeBlock {
     ///
     /// Returns [`Error::Block`] when the row count conflicts with an earlier
     /// column, the column has no C++ handle, or the native append fails.
-    pub fn push_cpp_column(&mut self, name: &str, column: &CppColumn) -> Result<(), Error> {
+    pub fn push_wire_column(&mut self, name: &str, column: &WireColumn) -> Result<(), Error> {
         if self.rows != 0 && self.rows != column.len() {
             return Err(Error::block(format!(
                 "column `{name}` has {} rows, expected {}",
@@ -256,7 +256,7 @@ impl NativeBlock {
                 self.rows
             )));
         }
-        let handle = column.cpp_handle().ok_or_else(|| {
+        let handle = column.wire_handle().ok_or_else(|| {
             Error::block(format!("column `{name}` has no native C++ representation"))
         })?;
         sys::ffi::block_append_column_handle(self.inner.pin_mut(), name, handle)
@@ -268,7 +268,7 @@ impl NativeBlock {
     }
 
     /// Borrow one native column as a matrix handle.
-    pub(crate) fn cpp_column(&self, index: usize) -> SharedPtr<sys::ColumnHandle> {
+    pub(crate) fn wire_column(&self, index: usize) -> SharedPtr<sys::ColumnHandle> {
         sys::ffi::block_column_handle(&self.inner, index)
     }
 

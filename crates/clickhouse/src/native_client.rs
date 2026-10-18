@@ -4,11 +4,11 @@ use clickhouse_sys as sys;
 use cxx::UniquePtr;
 
 use crate::{
-    cpp_block::CppBlock,
-    cpp_error::{CppError, CppResult},
+    wire_block::WireBlock,
+    wire_error::{WireError, WireResult},
 };
 
-/// A synchronous Native TCP client over `clickhouse-cpp`.
+/// A synchronous Native TCP client over the native ClickHouse client library.
 ///
 /// The full transport, failover, and query-event surface is owned by the
 /// transport tickets. This type intentionally exposes only the operations the
@@ -23,9 +23,9 @@ impl NativeClient {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn connect(host: &str, port: u16) -> CppResult<Self> {
+    pub fn connect(host: &str, port: u16) -> WireResult<Self> {
         Ok(Self {
-            handle: sys::new_client(host, port).map_err(CppError::from)?,
+            handle: sys::new_client(host, port).map_err(WireError::from)?,
         })
     }
 
@@ -34,8 +34,8 @@ impl NativeClient {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn ping(&mut self) -> CppResult<()> {
-        self.handle.pin_mut().ping().map_err(CppError::from)
+    pub fn ping(&mut self) -> WireResult<()> {
+        self.handle.pin_mut().ping().map_err(WireError::from)
     }
 
     /// Execute a statement.
@@ -43,8 +43,11 @@ impl NativeClient {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn execute(&mut self, query: &str) -> CppResult<()> {
-        self.handle.pin_mut().execute(query).map_err(CppError::from)
+    pub fn execute(&mut self, query: &str) -> WireResult<()> {
+        self.handle
+            .pin_mut()
+            .execute(query)
+            .map_err(WireError::from)
     }
 
     /// Insert one block into a table.
@@ -52,11 +55,11 @@ impl NativeClient {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn insert(&mut self, table: &str, block: &CppBlock) -> CppResult<()> {
+    pub fn insert(&mut self, table: &str, block: &WireBlock) -> WireResult<()> {
         self.handle
             .pin_mut()
-            .insert(table, block.cpp_handle())
-            .map_err(CppError::from)
+            .insert(table, block.wire_handle())
+            .map_err(WireError::from)
     }
 
     /// Select the first non-empty block of a query.
@@ -64,16 +67,16 @@ impl NativeClient {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn select_one(&mut self, query: &str) -> CppResult<Option<CppBlock>> {
+    pub fn select_one(&mut self, query: &str) -> WireResult<Option<WireBlock>> {
         let handle = self
             .handle
             .pin_mut()
             .select_one(query)
-            .map_err(CppError::from)?;
+            .map_err(WireError::from)?;
         if handle.is_null() {
             Ok(None)
         } else {
-            CppBlock::from_cpp(handle).map(Some)
+            WireBlock::from_wire(handle).map(Some)
         }
     }
 }

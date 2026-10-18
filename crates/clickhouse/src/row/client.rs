@@ -61,4 +61,25 @@ pub trait RowClient {
         })?;
         Ok(rows)
     }
+    /// Insert serde-serializable rows by inferring one block column per field.
+    /// # Errors
+    /// Column inference, serialization, or transport failures return an error.
+    fn insert_serde<T: serde::Serialize>(&mut self, table: &str, rows: &[T]) -> Result<()> {
+        let block = crate::serde_bridge::SerdeBridge::rows_to_block(rows)?;
+        if block.row_count() != 0 {
+            self.insert_block(table, &block)?;
+        }
+        Ok(())
+    }
+    /// Query blocks and deserialize every row by matching column names.
+    /// # Errors
+    /// Transport failures or incompatible column shapes return an error.
+    fn query_serde<T: serde::de::DeserializeOwned>(&mut self, sql: &str) -> Result<Vec<T>> {
+        let blocks = self.query_blocks(sql)?;
+        let mut rows = Vec::with_capacity(blocks.iter().map(Block::row_count).sum());
+        for block in &blocks {
+            rows.extend(crate::serde_bridge::SerdeBridge::block_to_rows(block)?);
+        }
+        Ok(rows)
+    }
 }

@@ -1,28 +1,31 @@
 //! Variable-length, composite, and wrapper column family coverage.
 
 use clickhouse::{
-    ArrayColumn, CppBlock, CppColumn, Decimal256Column, FixedStringColumn, GeoColumn, GeoKind,
-    LowCardinalityColumn, MapColumn, NothingColumn, NullableColumn, StringColumn, TupleColumn,
+    ArrayColumn, Decimal256Column, FixedStringColumn, GeoColumn, GeoKind, LowCardinalityColumn,
+    MapColumn, NothingColumn, NullableColumn, StringColumn, TupleColumn, WireBlock, WireColumn,
 };
 use zerocopy::FromBytes;
 
 #[test]
 fn strings_fixed_strings_and_json_round_trip() {
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("s", CppColumn::strings(["alpha", "beta"]).expect("strings"))
+        .append(
+            "s",
+            WireColumn::strings(["alpha", "beta"]).expect("strings"),
+        )
         .expect("append strings");
     let mut fixed = FixedStringColumn::new(4).expect("fixed string");
     fixed.append(b"ab").expect("append ab");
     fixed.append(b"wxyz").expect("append wxyz");
     block
-        .append("fs", CppColumn::FixedString(fixed))
+        .append("fs", WireColumn::FixedString(fixed))
         .expect("append fixed string");
     let mut json = StringColumn::new_json().expect("json");
     json.append_str("{}").expect("append json");
     json.append_str("{\"a\":1}").expect("append json");
     block
-        .append("j", CppColumn::Json(json))
+        .append("j", WireColumn::Json(json))
         .expect("append json");
 
     assert_eq!(block.column_str("s", 0).expect("s0"), "alpha");
@@ -34,14 +37,14 @@ fn strings_fixed_strings_and_json_round_trip() {
 
 #[test]
 fn nullable_primitive_and_string_round_trip() {
-    let inner = CppColumn::fixed(&[0_u32]).expect("inner");
+    let inner = WireColumn::fixed(&[0_u32]).expect("inner");
     let mut nullable = NullableColumn::new(&inner).expect("nullable");
     nullable.append_fixed(&[7_u32, 8]).expect("append values");
     nullable.append_null().expect("append null");
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("n", CppColumn::Nullable(Box::new(nullable)))
+        .append("n", WireColumn::Nullable(Box::new(nullable)))
         .expect("append nullable");
     assert_eq!(block.column_nulls("n").expect("nulls"), &[0, 0, 1]);
     let handle = block.column_handle("n").expect("handle");
@@ -51,13 +54,13 @@ fn nullable_primitive_and_string_round_trip() {
     let values = <[u32]>::ref_from_bytes(bytes).expect("values");
     assert_eq!(values, &[7, 8, 0]);
 
-    let inner = CppColumn::string().expect("string inner");
+    let inner = WireColumn::string().expect("string inner");
     let mut nullable = NullableColumn::new(&inner).expect("nullable string");
     nullable.append_str("x").expect("append string");
     nullable.append_null().expect("append null");
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("ns", CppColumn::Nullable(Box::new(nullable)))
+        .append("ns", WireColumn::Nullable(Box::new(nullable)))
         .expect("append nullable string");
     assert_eq!(block.column_str("ns", 0).expect("ns0"), "x");
     assert_eq!(block.column_nulls("ns").expect("ns nulls"), &[0, 1]);
@@ -66,14 +69,14 @@ fn nullable_primitive_and_string_round_trip() {
 #[test]
 fn array_offsets_and_values_round_trip() {
     let mut array = ArrayColumn::new("UInt32").expect("array");
-    let first = CppColumn::fixed(&[1_u32, 2, 3]).expect("first values");
+    let first = WireColumn::fixed(&[1_u32, 2, 3]).expect("first values");
     array.append_row(&first).expect("append first row");
-    let second = CppColumn::fixed(&[4_u32]).expect("second values");
+    let second = WireColumn::fixed(&[4_u32]).expect("second values");
     array.append_row(&second).expect("append second row");
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("a", CppColumn::Array(Box::new(array)))
+        .append("a", WireColumn::Array(Box::new(array)))
         .expect("append array");
     assert_eq!(block.column_offsets("a").expect("offsets"), &[3, 4]);
     let handle = block.column_handle("a").expect("array handle");
@@ -96,9 +99,9 @@ fn tuple_children_round_trip() {
         .expect("tuple u32");
     tuple.append_str(1, "y").expect("tuple string");
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("t", CppColumn::Tuple(tuple))
+        .append("t", WireColumn::Tuple(tuple))
         .expect("append tuple");
     assert!(
         block
@@ -121,16 +124,16 @@ fn tuple_children_round_trip() {
 #[test]
 fn map_low_cardinality_geo_and_nothing_round_trip() {
     let mut map = MapColumn::new("String", "UInt64").expect("map");
-    let keys = CppColumn::strings(["a"]).expect("keys");
-    let values = CppColumn::fixed(&[1_u64]).expect("values");
+    let keys = WireColumn::strings(["a"]).expect("keys");
+    let values = WireColumn::fixed(&[1_u64]).expect("values");
     map.append_row(&keys, &values)
         .expect("append first map row");
-    let keys = CppColumn::strings(["b"]).expect("keys");
-    let values = CppColumn::fixed(&[2_u64]).expect("values");
+    let keys = WireColumn::strings(["b"]).expect("keys");
+    let values = WireColumn::fixed(&[2_u64]).expect("values");
     map.append_row(&keys, &values)
         .expect("append second map row");
-    let mut block = CppBlock::new().expect("block");
-    block.append("m", CppColumn::Map(map)).expect("append map");
+    let mut block = WireBlock::new().expect("block");
+    block.append("m", WireColumn::Map(map)).expect("append map");
     assert!(
         block
             .column_type_name("m")
@@ -142,7 +145,7 @@ fn map_low_cardinality_geo_and_nothing_round_trip() {
     low_cardinality.append_str("a").expect("append a");
     low_cardinality.append_str("b").expect("append b");
     block
-        .append("lc", CppColumn::LowCardinality(Box::new(low_cardinality)))
+        .append("lc", WireColumn::LowCardinality(Box::new(low_cardinality)))
         .expect("append low cardinality");
     assert_eq!(block.column_str("lc", 0).expect("lc0"), "a");
     assert_eq!(block.column_str("lc", 1).expect("lc1"), "b");
@@ -151,7 +154,7 @@ fn map_low_cardinality_geo_and_nothing_round_trip() {
     point.append_point(1.5, 2.5).expect("append point");
     point.append_point(3.5, 4.5).expect("append point");
     block
-        .append("p", CppColumn::Geo(point))
+        .append("p", WireColumn::Geo(point))
         .expect("append point");
     assert_eq!(block.column_type_name("p").expect("point type"), "Point");
 
@@ -159,7 +162,7 @@ fn map_low_cardinality_geo_and_nothing_round_trip() {
     nothing.append_default().expect("append nothing");
     nothing.append_default().expect("append nothing");
     block
-        .append("n", CppColumn::Nothing(nothing))
+        .append("n", WireColumn::Nothing(nothing))
         .expect("append nothing");
     assert_eq!(block.column_type_name("n").expect("nothing type"), "Void");
 }
@@ -174,9 +177,9 @@ fn decimal256_rust_storage_and_block_clear() {
     decimal.clear();
     assert!(decimal.is_empty());
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("u", CppColumn::fixed(&[1_u32, 2]).expect("u32"))
+        .append("u", WireColumn::fixed(&[1_u32, 2]).expect("u32"))
         .expect("append u32");
     assert_eq!(block.row_count(), 2);
     block.clear();

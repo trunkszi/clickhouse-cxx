@@ -1,13 +1,18 @@
 //! Integration coverage for allocation-free projections and warmed batch appends.
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use clickhouse::Row;
 struct Counter;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+// Allocation-sensitive tests share one counting switch, so they must not run concurrently.
+static ALLOCATION_TEST_LOCK: Mutex<()> = Mutex::new(());
 #[global_allocator]
 static ALLOCATOR: Counter = Counter;
 // SAFETY: Every allocation and deallocation is delegated unchanged to System.
@@ -47,6 +52,9 @@ pub struct Record {
 /// Projection, row iteration, and refilling warmed buffers allocate nothing.
 #[test]
 fn warmed_borrowed_paths_do_not_allocate() {
+    let _guard = ALLOCATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut batch = RecordBatch::with_capacity(4);
     batch.push_ref(RecordRef {
         id: 7,
@@ -77,6 +85,9 @@ fn warmed_borrowed_paths_do_not_allocate() {
 /// Burst capacity is trimmed once; later steady-state refills allocate nothing.
 #[test]
 fn integration_burst_trim_and_warm_refill() {
+    let _guard = ALLOCATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut batch = RecordBatch::default();
     let value = RecordRef {
         id: 1,
@@ -113,6 +124,9 @@ fn integration_burst_trim_and_warm_refill() {
 /// Recursive blocks reuse each nested Vec after a bounded clear.
 #[test]
 fn integration_block_refill_reuses_capacity() {
+    let _guard = ALLOCATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut batch = RecordBatch::default();
     for _ in 0..4096 {
         batch.push_ref(RecordRef {

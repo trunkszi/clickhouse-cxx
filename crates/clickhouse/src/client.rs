@@ -17,7 +17,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Native`] when `clickhouse-cpp` cannot construct the
+    /// Returns [`Error::Native`] when the native client cannot construct the
     /// client or reach the endpoint.
     pub fn connect(
         endpoint: Endpoint,

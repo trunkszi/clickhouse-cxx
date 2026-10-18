@@ -4,10 +4,8 @@ use clickhouse_sys as sys;
 use cxx::{SharedPtr, UniquePtr};
 use zerocopy::IntoBytes;
 
-use crate::{
-    cpp_column::{CppColumn, FixedType},
-    cpp_error::{CppError, CppResult},
-};
+use super::{FixedType, WireColumn};
+use crate::wire_error::{WireError, WireResult};
 
 /// A Nullable wrapper around a nested column.
 pub struct NullableColumn {
@@ -21,7 +19,7 @@ impl NullableColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(inner: &CppColumn) -> CppResult<Self> {
+    pub fn new(inner: &WireColumn) -> WireResult<Self> {
         let nested_type = inner.type_name();
         let name = format!("Nullable({nested_type})");
         let handle = sys::new_column(&name)?;
@@ -36,15 +34,15 @@ impl NullableColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_null(&mut self) -> CppResult<()> {
+    pub fn append_null(&mut self) -> WireResult<()> {
         if let Some(nested) = self.nested().as_ref().and_then(|handle| handle.as_ref()) {
-            nested.append_default().map_err(CppError::from)?;
+            nested.append_default().map_err(WireError::from)?;
         }
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nullable column handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Nullable column handle is null".to_owned()))?
             .append_nullable_flag(true)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Append one or more non-null fixed-width values.
@@ -52,16 +50,16 @@ impl NullableColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_fixed<T: FixedType>(&mut self, values: &[T]) -> CppResult<()> {
+    pub fn append_fixed<T: FixedType>(&mut self, values: &[T]) -> WireResult<()> {
         let nested = self
             .nested()
-            .ok_or_else(|| CppError::Unsupported("Nullable has no nested column".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable has no nested column".to_owned()))?;
         let nested = nested
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nullable nested handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable nested handle is null".to_owned()))?;
         nested
             .append_fixed(values.as_bytes())
-            .map_err(CppError::from)?;
+            .map_err(WireError::from)?;
         for _ in values {
             self.append_flag(false)?;
         }
@@ -73,25 +71,25 @@ impl NullableColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_str(&mut self, value: &str) -> CppResult<()> {
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
         let nested = self
             .nested()
-            .ok_or_else(|| CppError::Unsupported("Nullable has no nested column".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable has no nested column".to_owned()))?;
         let nested = nested
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nullable nested handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable nested handle is null".to_owned()))?;
         nested
             .append_string(value.as_bytes())
-            .map_err(CppError::from)?;
+            .map_err(WireError::from)?;
         self.append_flag(false)
     }
 
-    fn append_flag(&mut self, is_null: bool) -> CppResult<()> {
+    fn append_flag(&mut self, is_null: bool) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nullable column handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Nullable column handle is null".to_owned()))?
             .append_nullable_flag(is_null)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Append a whole nested column.
@@ -100,17 +98,17 @@ impl NullableColumn {
     ///
     /// Returns an error when the nullable or nested handle is missing, or the
     /// underlying native append fails.
-    pub fn append_nested_column(&mut self, nested: &CppColumn) -> CppResult<()> {
+    pub fn append_nested_column(&mut self, nested: &WireColumn) -> WireResult<()> {
         let inner = self
             .nested()
-            .ok_or_else(|| CppError::Unsupported("Nullable has no nested column".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable has no nested column".to_owned()))?;
         let inner = inner
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nullable nested handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("Nullable nested handle is null".to_owned()))?;
         let other = nested
-            .cpp_handle()
-            .ok_or_else(|| CppError::Unsupported("nested column has no C++ handle".to_owned()))?;
-        inner.append_column(other).map_err(CppError::from)
+            .wire_handle()
+            .ok_or_else(|| WireError::Unsupported("nested column has no C++ handle".to_owned()))?;
+        inner.append_column(other).map_err(WireError::from)
     }
 
     /// Append one null flag without changing the nested column.
@@ -119,7 +117,7 @@ impl NullableColumn {
     ///
     /// Returns an error when the nullable handle is missing or the native
     /// append fails.
-    pub fn append_null_flag(&mut self, is_null: bool) -> CppResult<()> {
+    pub fn append_null_flag(&mut self, is_null: bool) -> WireResult<()> {
         self.append_flag(is_null)
     }
 
@@ -162,7 +160,7 @@ impl NullableColumn {
         &self.nested_type
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Nullable column handle")
     }
 }
@@ -179,7 +177,7 @@ impl ArrayColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(item_type: &str) -> CppResult<Self> {
+    pub fn new(item_type: &str) -> WireResult<Self> {
         let name = format!("Array({item_type})");
         let handle = sys::new_column(&name)?;
         Ok(Self {
@@ -193,15 +191,15 @@ impl ArrayColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_row(&mut self, values: &CppColumn) -> CppResult<()> {
-        let values = values.cpp_handle().ok_or_else(|| {
-            CppError::Unsupported("cannot append Decimal256 to an Array".to_owned())
+    pub fn append_row(&mut self, values: &WireColumn) -> WireResult<()> {
+        let values = values.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("cannot append Decimal256 to an Array".to_owned())
         })?;
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Array column handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Array column handle is null".to_owned()))?
             .array_append_row(values)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Nested values column handle.
@@ -245,7 +243,7 @@ impl ArrayColumn {
         &self.item_type
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Array column handle")
     }
 }
@@ -261,7 +259,7 @@ impl LowCardinalityColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(inner_type: &str) -> CppResult<Self> {
+    pub fn new(inner_type: &str) -> WireResult<Self> {
         let name = format!("LowCardinality({inner_type})");
         Ok(Self {
             handle: sys::new_column(&name)?,
@@ -273,12 +271,12 @@ impl LowCardinalityColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_str(&mut self, value: &str) -> CppResult<()> {
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
             .low_cardinality_append_string(value.as_bytes())
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Append a signed integer dictionary value.
@@ -286,12 +284,12 @@ impl LowCardinalityColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_i64(&mut self, value: i64) -> CppResult<()> {
+    pub fn append_i64(&mut self, value: i64) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
             .low_cardinality_append_i64(value)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Append an unsigned integer dictionary value.
@@ -299,12 +297,12 @@ impl LowCardinalityColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_u64(&mut self, value: u64) -> CppResult<()> {
+    pub fn append_u64(&mut self, value: u64) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
             .low_cardinality_append_u64(value)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -331,7 +329,7 @@ impl LowCardinalityColumn {
             .map_or_else(String::new, |handle| handle.type_name())
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("LowCardinality column handle")
     }
 }
@@ -347,9 +345,9 @@ impl TupleColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(element_types: &[&str]) -> CppResult<Self> {
+    pub fn new(element_types: &[&str]) -> WireResult<Self> {
         if element_types.is_empty() {
-            return Err(CppError::Unsupported(
+            return Err(WireError::Unsupported(
                 "empty Tuple is not supported".to_owned(),
             ));
         }
@@ -374,12 +372,12 @@ impl TupleColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_fixed(&mut self, index: usize, bytes: &[u8]) -> CppResult<()> {
+    pub fn append_fixed(&mut self, index: usize, bytes: &[u8]) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Tuple handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Tuple handle is null".to_owned()))?
             .tuple_append_fixed(index, bytes)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Append a string to one element column.
@@ -387,12 +385,12 @@ impl TupleColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_str(&mut self, index: usize, value: &str) -> CppResult<()> {
+    pub fn append_str(&mut self, index: usize, value: &str) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Tuple handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Tuple handle is null".to_owned()))?
             .tuple_append_string(index, value.as_bytes())
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -419,7 +417,7 @@ impl TupleColumn {
             .map_or_else(String::new, |handle| handle.type_name())
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Tuple column handle")
     }
 }
@@ -435,7 +433,7 @@ impl MapColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(key_type: &str, value_type: &str) -> CppResult<Self> {
+    pub fn new(key_type: &str, value_type: &str) -> WireResult<Self> {
         let name = format!("Map({key_type}, {value_type})");
         Ok(Self {
             handle: sys::new_column(&name)?,
@@ -447,18 +445,18 @@ impl MapColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_row(&mut self, keys: &CppColumn, values: &CppColumn) -> CppResult<()> {
-        let keys = keys.cpp_handle().ok_or_else(|| {
-            CppError::Unsupported("Decimal256 map keys are not supported".to_owned())
+    pub fn append_row(&mut self, keys: &WireColumn, values: &WireColumn) -> WireResult<()> {
+        let keys = keys.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("Decimal256 map keys are not supported".to_owned())
         })?;
-        let values = values.cpp_handle().ok_or_else(|| {
-            CppError::Unsupported("Decimal256 map values are not supported".to_owned())
+        let values = values.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("Decimal256 map values are not supported".to_owned())
         })?;
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Map handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Map handle is null".to_owned()))?
             .map_append_row(keys, values)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -485,7 +483,7 @@ impl MapColumn {
             .map_or_else(String::new, |handle| handle.type_name())
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Map column handle")
     }
 }
@@ -526,7 +524,7 @@ impl GeoColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(kind: GeoKind) -> CppResult<Self> {
+    pub fn new(kind: GeoKind) -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_column(kind.type_name())?,
             kind,
@@ -538,17 +536,17 @@ impl GeoColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_point(&mut self, x: f64, y: f64) -> CppResult<()> {
+    pub fn append_point(&mut self, x: f64, y: f64) -> WireResult<()> {
         if self.kind != GeoKind::Point {
-            return Err(CppError::Unsupported(
+            return Err(WireError::Unsupported(
                 "append_point is only valid for Point columns".to_owned(),
             ));
         }
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Geo handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Geo handle is null".to_owned()))?
             .geo_append_point(x, y)
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -580,7 +578,7 @@ impl GeoColumn {
         self.kind
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Geo column handle")
     }
 }
@@ -596,7 +594,7 @@ impl NothingColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new() -> CppResult<Self> {
+    pub fn new() -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_column("Void")?,
         })
@@ -607,12 +605,12 @@ impl NothingColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_default(&mut self) -> CppResult<()> {
+    pub fn append_default(&mut self) -> WireResult<()> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("Nothing handle is null".to_owned()))?
+            .ok_or_else(|| WireError::Unsupported("Nothing handle is null".to_owned()))?
             .append_default()
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -639,12 +637,12 @@ impl NothingColumn {
             .map_or_else(String::new, |handle| handle.type_name())
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Nothing column handle")
     }
 }
 
-/// Rust-side storage for Decimal256, which clickhouse-cpp 3.x does not expose.
+/// Rust-side storage for Decimal256, which the native column layer does not expose.
 pub struct Decimal256Column {
     scale: u32,
     values: Vec<[u8; 32]>,

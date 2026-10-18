@@ -3,7 +3,7 @@
 use clickhouse_sys as sys;
 use cxx::UniquePtr;
 
-use crate::cpp_error::{CppError, CppResult};
+use crate::wire_error::{WireError, WireResult};
 
 /// A String or JSON column; both store variable-length UTF-8 payloads.
 pub struct StringColumn {
@@ -16,7 +16,7 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new() -> CppResult<Self> {
+    pub fn new() -> WireResult<Self> {
         Self::from_name("String")
     }
 
@@ -25,11 +25,11 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new_json() -> CppResult<Self> {
+    pub fn new_json() -> WireResult<Self> {
         Self::from_name("JSON")
     }
 
-    fn from_name(name: &str) -> CppResult<Self> {
+    fn from_name(name: &str) -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_column(name)?,
         })
@@ -40,7 +40,7 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_str(&mut self, value: &str) -> CppResult<()> {
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
         self.append_bytes(value.as_bytes())
     }
 
@@ -49,12 +49,12 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_bytes(&mut self, value: &[u8]) -> CppResult<()> {
+    pub fn append_bytes(&mut self, value: &[u8]) -> WireResult<()> {
         let handle = self
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("String column handle is null".to_owned()))?;
-        handle.append_string(value).map_err(CppError::from)
+            .ok_or_else(|| WireError::Unsupported("String column handle is null".to_owned()))?;
+        handle.append_string(value).map_err(WireError::from)
     }
 
     /// Number of rows.
@@ -86,9 +86,9 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn at(&self, index: usize) -> CppResult<&str> {
+    pub fn at(&self, index: usize) -> WireResult<&str> {
         let bytes = self.bytes_at(index)?;
-        core::str::from_utf8(bytes).map_err(|_| CppError::Utf8(self.type_name()))
+        core::str::from_utf8(bytes).map_err(|_| WireError::Utf8(self.type_name()))
     }
 
     /// Borrow one row as bytes.
@@ -96,9 +96,9 @@ impl StringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn bytes_at(&self, index: usize) -> CppResult<&[u8]> {
+    pub fn bytes_at(&self, index: usize) -> WireResult<&[u8]> {
         if index >= self.len() {
-            return Err(CppError::IndexOutOfBounds {
+            return Err(WireError::IndexOutOfBounds {
                 index,
                 len: self.len(),
             });
@@ -106,11 +106,11 @@ impl StringColumn {
         let handle = self
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("String column handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("String column handle is null".to_owned()))?;
         Ok(handle.string_at(index))
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         // The handle is created in the constructors and never reset.
         self.handle.as_ref().expect("String column handle")
     }
@@ -128,7 +128,7 @@ impl FixedStringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new(width: usize) -> CppResult<Self> {
+    pub fn new(width: usize) -> WireResult<Self> {
         let name = format!("FixedString({width})");
         let handle = sys::new_column(&name)?;
         Ok(Self { handle, width })
@@ -139,15 +139,14 @@ impl FixedStringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append(&mut self, value: &[u8]) -> CppResult<()> {
+    pub fn append(&mut self, value: &[u8]) -> WireResult<()> {
         let mut padded = vec![0_u8; self.width];
         let copied = value.len().min(self.width);
         padded[..copied].copy_from_slice(&value[..copied]);
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| CppError::Unsupported("FixedString column handle is null".to_owned()))?;
-        handle.append_fixed(&padded).map_err(CppError::from)
+        let handle = self.handle.as_ref().ok_or_else(|| {
+            WireError::Unsupported("FixedString column handle is null".to_owned())
+        })?;
+        handle.append_fixed(&padded).map_err(WireError::from)
     }
 
     /// Append one UTF-8 value.
@@ -155,7 +154,7 @@ impl FixedStringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_str(&mut self, value: &str) -> CppResult<()> {
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
         self.append(value.as_bytes())
     }
 
@@ -193,21 +192,20 @@ impl FixedStringColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn at(&self, index: usize) -> CppResult<&[u8]> {
+    pub fn at(&self, index: usize) -> WireResult<&[u8]> {
         if index >= self.len() {
-            return Err(CppError::IndexOutOfBounds {
+            return Err(WireError::IndexOutOfBounds {
                 index,
                 len: self.len(),
             });
         }
-        let handle = self
-            .handle
-            .as_ref()
-            .ok_or_else(|| CppError::Unsupported("FixedString column handle is null".to_owned()))?;
+        let handle = self.handle.as_ref().ok_or_else(|| {
+            WireError::Unsupported("FixedString column handle is null".to_owned())
+        })?;
         Ok(handle.string_at(index))
     }
 
-    pub(crate) fn cpp_handle(&self) -> &sys::ColumnHandle {
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("FixedString column handle")
     }
 }

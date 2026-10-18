@@ -4,7 +4,7 @@ use clickhouse_sys as sys;
 use cxx::UniquePtr;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::cpp_error::{CppError, CppResult};
+use crate::wire_error::{WireError, WireResult};
 
 /// Fixed-width ClickHouse column kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,24 +102,25 @@ pub fn decimal_kind(type_name: &str) -> Option<FixedKind> {
 
 impl FixedKind {
     /// Whether this kind matches a concrete column type code and name.
-    pub fn matches(self, actual: crate::cpp_column::TypeCode, type_name: &str) -> bool {
+    pub fn matches(self, actual: super::TypeCode, type_name: &str) -> bool {
         match self {
             Self::Decimal32 => {
-                actual == crate::cpp_column::TypeCode::Decimal && decimal_precision(type_name) <= 9
+                actual == super::TypeCode::Decimal && decimal_precision(type_name) <= 9
             }
             Self::Decimal64 => {
-                actual == crate::cpp_column::TypeCode::Decimal
+                actual == super::TypeCode::Decimal
                     && (10..=18).contains(&decimal_precision(type_name))
             }
             Self::Decimal128 => {
-                actual == crate::cpp_column::TypeCode::Decimal && decimal_precision(type_name) > 18
+                actual == super::TypeCode::Decimal && decimal_precision(type_name) > 18
             }
-            _ => crate::cpp_column::TypeCode::from_i32(self.type_code())
-                .is_ok_and(|expected| expected == actual),
+            _ => {
+                super::TypeCode::from_i32(self.type_code()).is_ok_and(|expected| expected == actual)
+            }
         }
     }
 
-    /// The C++ type code used by clickhouse-cpp.
+    /// The native type code used by the wire layer.
     pub fn type_code(self) -> i32 {
         match self {
             Self::UInt8 => 5,
@@ -188,7 +189,7 @@ impl FixedKind {
 
 /// Rust element types with a canonical fixed-width ClickHouse representation.
 pub trait FixedType: Copy + FromBytes + IntoBytes + Immutable + KnownLayout + 'static {
-    /// CppColumn kind.
+    /// WireColumn kind.
     const KIND: FixedKind;
     /// Default ClickHouse type name.
     const TYPE_NAME: &'static str;
@@ -347,22 +348,22 @@ fixed_newtype!(
 );
 
 /// An owned fixed-width column.
-pub struct CppFixedColumn {
+pub struct FixedWireColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     kind: FixedKind,
 }
 
-impl CppFixedColumn {
+impl FixedWireColumn {
     /// Create an empty column with an explicit ClickHouse type name.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new_named(kind: FixedKind, type_name: &str) -> CppResult<Self> {
-        let handle = sys::new_column(type_name).map_err(CppError::from)?;
-        let actual = crate::cpp_column::TypeCode::from_i32(handle.type_code())?;
+    pub fn new_named(kind: FixedKind, type_name: &str) -> WireResult<Self> {
+        let handle = sys::new_column(type_name).map_err(WireError::from)?;
+        let actual = super::TypeCode::from_i32(handle.type_code())?;
         if !kind.matches(actual, &handle.type_name()) {
-            return Err(CppError::Unsupported(format!(
+            return Err(WireError::Unsupported(format!(
                 "type name '{type_name}' did not produce {kind:?} (got {actual:?})"
             )));
         }
@@ -374,7 +375,7 @@ impl CppFixedColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn new<T: FixedType>() -> CppResult<Self> {
+    pub fn new<T: FixedType>() -> WireResult<Self> {
         Self::new_named(T::KIND, T::TYPE_NAME)
     }
 
@@ -383,7 +384,7 @@ impl CppFixedColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn from_slice<T: FixedType>(values: &[T]) -> CppResult<Self> {
+    pub fn from_slice<T: FixedType>(values: &[T]) -> WireResult<Self> {
         let mut column = Self::new::<T>()?;
         column.append_slice(values)?;
         Ok(column)
@@ -398,7 +399,7 @@ impl CppFixedColumn {
         kind: FixedKind,
         type_name: &str,
         values: &[T],
-    ) -> CppResult<Self> {
+    ) -> WireResult<Self> {
         let mut column = Self::new_named(kind, type_name)?;
         column.append_slice(values)?;
         Ok(column)
@@ -410,13 +411,13 @@ impl CppFixedColumn {
     ///
     /// Returns an error if the type name is unsupported or the byte length is
     /// not a multiple of the element width.
-    pub fn from_bytes(kind: FixedKind, type_name: &str, bytes: &[u8]) -> CppResult<Self> {
+    pub fn from_bytes(kind: FixedKind, type_name: &str, bytes: &[u8]) -> WireResult<Self> {
         let column = Self::new_named(kind, type_name)?;
         let handle = column
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("fixed column handle is null".to_owned()))?;
-        handle.append_fixed(bytes).map_err(CppError::from)?;
+            .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))?;
+        handle.append_fixed(bytes).map_err(WireError::from)?;
         Ok(column)
     }
 
@@ -425,9 +426,9 @@ impl CppFixedColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_slice<T: FixedType>(&mut self, values: &[T]) -> CppResult<()> {
+    pub fn append_slice<T: FixedType>(&mut self, values: &[T]) -> WireResult<()> {
         if self.kind != T::KIND {
-            return Err(CppError::Unsupported(format!(
+            return Err(WireError::Unsupported(format!(
                 "cannot append {:?} values to a {:?} column",
                 T::KIND,
                 self.kind
@@ -436,10 +437,10 @@ impl CppFixedColumn {
         let handle = self
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("fixed column handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))?;
         handle
             .append_fixed(values.as_bytes())
-            .map_err(CppError::from)
+            .map_err(WireError::from)
     }
 
     /// Project the column as a zero-copy slice.
@@ -447,9 +448,9 @@ impl CppFixedColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn as_slice<T: FixedType>(&self) -> CppResult<&[T]> {
+    pub fn as_slice<T: FixedType>(&self) -> WireResult<&[T]> {
         if self.kind != T::KIND {
-            return Err(CppError::Unsupported(format!(
+            return Err(WireError::Unsupported(format!(
                 "column is {:?}, not {:?}",
                 self.kind,
                 T::KIND
@@ -458,9 +459,9 @@ impl CppFixedColumn {
         let handle = self
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("fixed column handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))?;
         let bytes = handle.fixed_bytes();
-        <[T]>::ref_from_bytes(bytes).map_err(|_| CppError::Alignment)
+        <[T]>::ref_from_bytes(bytes).map_err(|_| WireError::Alignment)
     }
 
     /// Copy the column into an aligned Rust vector.
@@ -468,9 +469,9 @@ impl CppFixedColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn to_vec<T: FixedType>(&self) -> CppResult<Vec<T>> {
+    pub fn to_vec<T: FixedType>(&self) -> WireResult<Vec<T>> {
         if self.kind != T::KIND {
-            return Err(CppError::Unsupported(format!(
+            return Err(WireError::Unsupported(format!(
                 "column is {:?}, not {:?}",
                 self.kind,
                 T::KIND
@@ -479,18 +480,18 @@ impl CppFixedColumn {
         let handle = self
             .handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("fixed column handle is null".to_owned()))?;
+            .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))?;
         let bytes = handle.fixed_bytes();
         let size = core::mem::size_of::<T>();
         if size == 0 || bytes.len() % size != 0 {
-            return Err(CppError::InvalidLength {
+            return Err(WireError::InvalidLength {
                 len: bytes.len(),
                 element_size: size,
             });
         }
         let mut values = Vec::with_capacity(bytes.len() / size);
         for chunk in bytes.chunks_exact(size) {
-            let value = T::read_from_bytes(chunk).map_err(|_| CppError::Alignment)?;
+            let value = T::read_from_bytes(chunk).map_err(|_| WireError::Alignment)?;
             values.push(value);
         }
         Ok(values)
@@ -506,7 +507,7 @@ impl CppFixedColumn {
         self.len() == 0
     }
 
-    /// Retained capacity reported by clickhouse-cpp.
+    /// Retained capacity reported by the native column.
     pub fn capacity(&self) -> usize {
         self.handle.as_ref().map_or(0, |handle| handle.capacity())
     }
@@ -525,14 +526,14 @@ impl CppFixedColumn {
             .map_or_else(String::new, |handle| handle.type_name())
     }
 
-    /// CppColumn kind.
+    /// WireColumn kind.
     pub fn kind(&self) -> FixedKind {
         self.kind
     }
 
-    pub(crate) fn cpp_handle(&self) -> CppResult<&sys::ColumnHandle> {
+    pub(crate) fn wire_handle(&self) -> WireResult<&sys::ColumnHandle> {
         self.handle
             .as_ref()
-            .ok_or_else(|| CppError::Unsupported("fixed column handle is null".to_owned()))
+            .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))
     }
 }

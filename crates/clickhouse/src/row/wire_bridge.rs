@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use crate::{
-    ArrayColumn, Column, CppColumn, FixedKind, MapColumn, NullableColumn, StringColumn, TypeCode,
+    ArrayColumn, Column, FixedKind, MapColumn, NullableColumn, StringColumn, TypeCode, WireColumn,
     column::{AlignedBytes, ColumnData},
     error::{Error, Result, schema},
     sys,
@@ -37,7 +37,7 @@ fn unsupported(type_name: &str) -> Error {
     }
 }
 
-fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<CppColumn> {
+fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<WireColumn> {
     match &column.data {
         ColumnData::Fixed(bytes) => {
             let kind =
@@ -57,10 +57,10 @@ fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<CppCol
             let slice = raw
                 .get(begin..finish)
                 .ok_or_else(|| schema("array value slice out of bounds"))?;
-            Ok(CppColumn::fixed_bytes(kind, &column.type_name, slice).map_err(cpp_error)?)
+            Ok(WireColumn::fixed_bytes(kind, &column.type_name, slice).map_err(wire_error)?)
         }
         ColumnData::Strings { offsets, bytes } => {
-            let mut column = StringColumn::new().map_err(cpp_error)?;
+            let mut column = StringColumn::new().map_err(wire_error)?;
             for row in start..end {
                 let begin = if row == 0 {
                     0
@@ -77,15 +77,15 @@ fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<CppCol
                 let value = bytes
                     .get(begin..finish)
                     .ok_or_else(|| schema("string value out of bounds"))?;
-                column.append_bytes(value).map_err(cpp_error)?;
+                column.append_bytes(value).map_err(wire_error)?;
             }
-            Ok(CppColumn::String(column))
+            Ok(WireColumn::String(column))
         }
         _ => Err(unsupported(&column.type_name)),
     }
 }
 
-fn cpp_error(error: crate::CppError) -> Error {
+fn wire_error(error: crate::WireError) -> Error {
     Error::SchemaMismatch {
         table: None,
         reason: Cow::Owned(format!("{error}")),
@@ -97,49 +97,49 @@ fn cpp_error(error: crate::CppError) -> Error {
 /// # Errors
 ///
 /// Returns an error for unsupported column shapes or bridge failures.
-pub(crate) fn to_cpp(column: &Column) -> Result<CppColumn> {
+pub(crate) fn to_wire(column: &Column) -> Result<WireColumn> {
     match &column.data {
         ColumnData::Fixed(bytes) => {
             let kind =
                 fixed_kind(&column.type_name).ok_or_else(|| unsupported(&column.type_name))?;
-            CppColumn::fixed_bytes(kind, &column.type_name, bytes.as_bytes()).map_err(cpp_error)
+            WireColumn::fixed_bytes(kind, &column.type_name, bytes.as_bytes()).map_err(wire_error)
         }
         ColumnData::Strings { .. } => scalar_from_slice(column, 0, column.len()),
         ColumnData::Array { offsets, values } => {
-            let mut array = ArrayColumn::new(&values.type_name).map_err(cpp_error)?;
+            let mut array = ArrayColumn::new(&values.type_name).map_err(wire_error)?;
             let mut previous = 0_u64;
             for &offset in offsets {
                 let end = offset as usize;
                 let row = scalar_from_slice(values, previous as usize, end)?;
-                array.append_row(&row).map_err(cpp_error)?;
+                array.append_row(&row).map_err(wire_error)?;
                 previous = offset;
             }
-            Ok(CppColumn::Array(Box::new(array)))
+            Ok(WireColumn::Array(Box::new(array)))
         }
         ColumnData::Nullable { null_map, values } => {
-            let inner = to_cpp(values)?;
-            let mut nullable = NullableColumn::new(&inner).map_err(cpp_error)?;
-            nullable.append_nested_column(&inner).map_err(cpp_error)?;
+            let inner = to_wire(values)?;
+            let mut nullable = NullableColumn::new(&inner).map_err(wire_error)?;
+            nullable.append_nested_column(&inner).map_err(wire_error)?;
             for flag in null_map {
-                nullable.append_null_flag(*flag == 1).map_err(cpp_error)?;
+                nullable.append_null_flag(*flag == 1).map_err(wire_error)?;
             }
-            Ok(CppColumn::Nullable(Box::new(nullable)))
+            Ok(WireColumn::Nullable(Box::new(nullable)))
         }
         ColumnData::Map {
             offsets,
             keys,
             values,
         } => {
-            let mut map = MapColumn::new(&keys.type_name, &values.type_name).map_err(cpp_error)?;
+            let mut map = MapColumn::new(&keys.type_name, &values.type_name).map_err(wire_error)?;
             let mut previous = 0_u64;
             for &offset in offsets {
                 let end = offset as usize;
                 let row_keys = scalar_from_slice(keys, previous as usize, end)?;
                 let row_values = scalar_from_slice(values, previous as usize, end)?;
-                map.append_row(&row_keys, &row_values).map_err(cpp_error)?;
+                map.append_row(&row_keys, &row_values).map_err(wire_error)?;
                 previous = offset;
             }
-            Ok(CppColumn::Map(map))
+            Ok(WireColumn::Map(map))
         }
     }
 }
@@ -242,8 +242,8 @@ fn map_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Result<Colu
 /// # Errors
 ///
 /// Returns an error for unsupported column kinds or bridge failures.
-pub(crate) fn from_cpp(handle: &sys::ColumnHandle, name: &str) -> Result<Column> {
-    match TypeCode::from_i32(handle.type_code()).map_err(cpp_error)? {
+pub(crate) fn from_wire(handle: &sys::ColumnHandle, name: &str) -> Result<Column> {
+    match TypeCode::from_i32(handle.type_code()).map_err(wire_error)? {
         TypeCode::String | TypeCode::Json => Ok(string_column_from_handle(handle, name)),
         TypeCode::Array => {
             let offsets = handle.array_offsets().to_vec();
@@ -251,7 +251,7 @@ pub(crate) fn from_cpp(handle: &sys::ColumnHandle, name: &str) -> Result<Column>
             let nested = nested
                 .as_ref()
                 .ok_or_else(|| schema("array nested handle is null"))?;
-            let values = from_cpp(nested, "values")?;
+            let values = from_wire(nested, "values")?;
             Ok(Column {
                 name: Cow::Owned(name.to_owned()),
                 type_name: Cow::Owned(handle.type_name()),
@@ -268,7 +268,7 @@ pub(crate) fn from_cpp(handle: &sys::ColumnHandle, name: &str) -> Result<Column>
             let nested = nested
                 .as_ref()
                 .ok_or_else(|| schema("nullable nested handle is null"))?;
-            let values = from_cpp(nested, "values")?;
+            let values = from_wire(nested, "values")?;
             Ok(Column {
                 name: Cow::Owned(name.to_owned()),
                 type_name: Cow::Owned(handle.type_name()),

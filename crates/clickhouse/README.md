@@ -48,11 +48,12 @@ server; examples with a live section read `CLICKHOUSE_URL` (for example
 
 | Example | Topic |
 | :--- | :--- |
-| `01_quickstart_native_tcp` | `Block` and `CppBlock` construction, schema inspection, zero-copy fixed-width projections, optional `Client` round-trip. |
+| `01_quickstart_native_tcp` | `Block` and `WireBlock` construction, schema inspection, zero-copy fixed-width projections, optional `Client` round-trip. |
 | `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes, borrowed `Cow`/`Option`/`Vec`/`BTreeMap` fields, generated `Batch`, `BlockView`, and `Ref`. |
 | `03_memory_policy_and_batch_reuse` | `clickhouse::BufferPolicy` (`default`, `unbounded`, `minimal`), aggregate `allocated_bytes()`, `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | All column families from numeric and Bool through Nullable, Array, Tuple, Map, Geo, JSON, and Nothing. |
 | `05_dual_transport_and_row_client` | `RowClient` over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map rows. |
+| `06_serde_compatibility` | `SerdeBridge` RowBinary and `Block` conversion for serde-only structs, `insert_serde`/`query_serde`, and serde naming/bytes attributes in `#[derive(Row)]`. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -60,4 +61,30 @@ cargo run -p clickhouse --example 02_derive_row_and_zero_copy_views
 cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
+cargo run -p clickhouse --example 06_serde_compatibility
 ```
+
+## Serde Compatibility
+
+`SerdeBridge` accepts structs that implement only `serde::Serialize` and
+`serde::Deserialize`; `#[derive(Row)]` is not required.
+
+- `SerdeBridge::to_rowbinary(&rows)` encodes a slice into ClickHouse
+  `RowBinary` and returns the serde field names captured from the first row.
+- `SerdeBridge::from_rowbinary(&bytes)` decodes concatenated RowBinary rows
+  back into owned values.
+- `SerdeBridge::rows_to_block(&rows)` builds the row-layer `Block` by
+  dispatching serde fields into typed ClickHouse columns. `Option` becomes
+  `Nullable`, `Vec` becomes `Array`, and `serde_bytes` payloads become binary
+  `String` columns.
+- `SerdeBridge::block_to_rows(&block)` materializes rows from a block by
+  matching column names to serde field names.
+
+`RowClient` exposes the same bridge as `insert_serde(table, &rows)` and
+`query_serde::<T>(sql)`, so an in-memory transport and the Native TCP `Client`
+share one typed API.
+
+`#[derive(Row)]` also understands the serde naming attributes:
+`#[serde(rename_all = "...")]` and `#[serde(rename = "...")]` select column
+names, and `#[serde(with = "serde_bytes")]` selects a binary `String` column
+instead of `Array(UInt8)`.

@@ -43,11 +43,12 @@ The examples under `crates/clickhouse/examples/` form a progressive, runnable tu
 
 | Example | What it teaches |
 | :--- | :--- |
-| `01_quickstart_native_tcp` | Build a row-layer `Block` and a C++ `CppBlock`, inspect their schema, project `&[u64]` and `&[f64]` without copying, and optionally round-trip through the Native TCP `Client`. |
+| `01_quickstart_native_tcp` | Build a row-layer `Block` and a native `WireBlock`, inspect their schema, project `&[u64]` and `&[f64]` without copying, and optionally round-trip through the Native TCP `Client`. |
 | `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes (`table`, `rename_all`, `rename`, `bytes`), borrowed `Cow` fields, `Option`, `Vec`, and `BTreeMap`, plus the generated `Batch`, `BlockView`, and `Ref` types. |
 | `03_memory_policy_and_batch_reuse` | The real `clickhouse::BufferPolicy`: `default()`, `unbounded()`, `minimal()`, `allocated_bytes()`, policy-driven `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | The complete column-family tour: numeric, Bool, String/FixedString/JSON, date/time, decimals, UUID, IP, enums, Nullable, Array, LowCardinality, Tuple, Map, Geo, and Nothing. |
 | `05_dual_transport_and_row_client` | The typed `RowClient` surface (`insert_batch`, `insert_rows`, `query_rows`, `query_views`) over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map bridge columns. |
+| `06_serde_compatibility` | `SerdeBridge` for `serde`-only structs (RowBinary and `Block` conversion), `RowClient::insert_serde`/`query_serde` over an in-memory transport and Native TCP, and `#[serde(rename_all)]`, `#[serde(rename)]`, and `#[serde(with = "serde_bytes")]` support in `#[derive(Row)]`. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -55,7 +56,33 @@ cargo run -p clickhouse --example 02_derive_row_and_zero_copy_views
 cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
+cargo run -p clickhouse --example 06_serde_compatibility
 ```
+
+## Serde Compatibility
+
+`SerdeBridge` accepts structs that implement only `serde::Serialize` and
+`serde::Deserialize`; `#[derive(Row)]` is not required.
+
+- `SerdeBridge::to_rowbinary(&rows)` encodes a slice into ClickHouse
+  `RowBinary` and returns the serde field names captured from the first row.
+- `SerdeBridge::from_rowbinary(&bytes)` decodes concatenated RowBinary rows
+  back into owned values.
+- `SerdeBridge::rows_to_block(&rows)` builds the row-layer `Block` by
+  dispatching serde fields into typed ClickHouse columns. `Option` becomes
+  `Nullable`, `Vec` becomes `Array`, and `serde_bytes` payloads become binary
+  `String` columns.
+- `SerdeBridge::block_to_rows(&block)` materializes rows from a block by
+  matching column names to serde field names.
+
+`RowClient` exposes the same bridge as `insert_serde(table, &rows)` and
+`query_serde::<T>(sql)`, so an in-memory transport and the Native TCP `Client`
+share one typed API.
+
+`#[derive(Row)]` also understands the serde naming attributes:
+`#[serde(rename_all = "...")]` and `#[serde(rename = "...")]` select column
+names, and `#[serde(with = "serde_bytes")]` selects a binary `String` column
+instead of `Array(UInt8)`.
 
 ## Documentation
 

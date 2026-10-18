@@ -1,10 +1,10 @@
 //! Shared contracts used by the row derive macro.
 mod client;
-mod cpp_bridge;
 mod field;
 mod memory;
 pub(crate) mod native;
 mod owned;
+mod wire_bridge;
 pub use client::RowClient;
 pub use owned::{OwnedField, OwnedRow};
 mod composite;

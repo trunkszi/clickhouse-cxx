@@ -19,7 +19,7 @@
 
 use std::env;
 
-use clickhouse::{Block, Client, CppBlock, CppColumn, Endpoint, NativeBlock};
+use clickhouse::{Block, Client, Endpoint, NativeBlock, WireBlock, WireColumn};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ids = [101_u64, 102, 103];
@@ -48,38 +48,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  value = {block_values:?}");
 
     // ---------------------------------------------------------------------
-    // 2. The clickhouse-cpp CppBlock.
+    // 2. The native WireBlock.
     //
-    // CppBlock owns C++ `clickhouse::Block` storage. `column_slice` validates
+    // WireBlock owns C++ `clickhouse::Block` storage. `column_slice` validates
     // the ClickHouse type before projecting the native buffer as `&[T]`.
     // ---------------------------------------------------------------------
-    let mut cpp_block = CppBlock::new()?;
-    cpp_block.append("id", CppColumn::fixed(&ids)?)?;
-    cpp_block.append("value", CppColumn::fixed(&values)?)?;
+    let mut wire_block = WireBlock::new()?;
+    wire_block.append("id", WireColumn::fixed(&ids)?)?;
+    wire_block.append("value", WireColumn::fixed(&values)?)?;
 
-    let cpp_ids: &[u64] = cpp_block.column_slice("id")?;
-    let cpp_values: &[f64] = cpp_block.column_slice("value")?;
-    println!("\nC++ matrix CppBlock");
+    let wire_ids: &[u64] = wire_block.column_slice("id")?;
+    let wire_values: &[f64] = wire_block.column_slice("value")?;
+    println!("\nC++ matrix WireBlock");
     println!(
         "  rows={} columns={}",
-        cpp_block.row_count(),
-        cpp_block.column_count()
+        wire_block.row_count(),
+        wire_block.column_count()
     );
-    for name in cpp_block.column_names() {
+    for name in wire_block.column_names() {
         println!(
             "  {name}: {} -> {:?}",
-            cpp_block.column_type_name(name)?,
-            cpp_block.column_type_code(name)?
+            wire_block.column_type_name(name)?,
+            wire_block.column_type_code(name)?
         );
     }
-    println!("  id    = {cpp_ids:?}");
-    println!("  value = {cpp_values:?}");
+    println!("  id    = {wire_ids:?}");
+    println!("  value = {wire_values:?}");
 
     // The slices above borrow block storage. No vector of values is created
     // between the column bytes and the printed slice.
     println!(
         "  first id address inside block: {:p}",
-        cpp_ids.first().expect("one row")
+        wire_ids.first().expect("one row")
     );
 
     // ---------------------------------------------------------------------

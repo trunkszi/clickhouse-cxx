@@ -19,7 +19,7 @@ pub enum Error {
         /// Scheme without the `://` separator.
         scheme: Cow<'static, str>,
     },
-    /// `clickhouse-cpp` rejected or failed the operation.
+    /// The native client rejected or failed the operation.
     #[error("native transport failure: {message}")]
     Native {
         /// Diagnostic text from the bridge.
@@ -69,6 +69,12 @@ pub enum Error {
         /// Number of rows in the projection.
         row_count: usize,
     },
+    /// A serde value could not be encoded as RowBinary or a block column.
+    #[error("serde bridge failure: {message}")]
+    Serde {
+        /// Diagnostic text for the rejected serde shape.
+        message: Cow<'static, str>,
+    },
 }
 
 impl Error {
@@ -90,6 +96,12 @@ impl Error {
 
     pub(crate) fn block(message: impl Into<Cow<'static, str>>) -> Self {
         Self::Block {
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn serde(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::Serde {
             message: message.into(),
         }
     }
