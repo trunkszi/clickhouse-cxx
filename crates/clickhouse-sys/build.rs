@@ -105,12 +105,18 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=m");
 
-    cxx_build::bridge("src/lib.rs")
+    cxx_build::bridges(["src/lib.rs", "src/bridge.rs"])
         .file("src/shim.cpp")
         .file("src/shim_block.cpp")
         .file("src/shim_client.cpp")
         .file("src/shim_column.cpp")
         .file("src/shim_composite.cpp")
+        .file("cpp/rustls_socket.cpp")
+        .file("cpp/native_client.cpp")
+        .include("cpp")
+        .define("CH_NON_OPTIONAL_CURRENT_ENDPOINT", "1")
+        .define("CH_MAP_BOOL_TO_UINT8", "0")
+        .define("CH_USE_ABSEIL_FOR_BIGNUM", "0")
         .include("src")
         .include(&source)
         .flag_if_supported("-std=c++17")
@@ -118,6 +124,12 @@ fn main() {
 
     for path in [
         "src/lib.rs",
+        "src/bridge.rs",
+        "src/session.rs",
+        "cpp/rustls_socket.cpp",
+        "cpp/rustls_socket.h",
+        "cpp/native_client.cpp",
+        "cpp/native_client.h",
         "src/shim.cpp",
         "src/shim.h",
         "src/shim_matrix.h",

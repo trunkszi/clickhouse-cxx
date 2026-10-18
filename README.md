@@ -7,6 +7,7 @@ A general-purpose, purely synchronous, high-performance ClickHouse client SDK fo
 ## Key Features
 
 - **Zero Async Runtime**: Strictly synchronous execution across the entire workspace. No `tokio`, `futures`, `async-std`, or `smol` dependencies enter your dependency graph.
+- **Single-Threaded Client State**: Clients, endpoints, failover policies, and connected sessions are `!Send` and `!Sync`. Native socket IO uses single-threaded borrowing without mutex locking; observers accept `FnMut` closures with `Rc<RefCell<_>>` state.
 - **Dual Transport Parity**: A single `clickhouse::Client` connects over either:
   - **Native TCP (`tcp://`, `tcps://`)**: Backed by `ClickHouse/clickhouse-cpp` compiled with the 3.x modern API (`CH_USE_3X_API=ON`) and custom `rustls` TLS socket streams (`WITH_OPENSSL=OFF`).
   - **HTTP/2 (`http://`, `https://`)**: Backed by `curl-rust` with `http2` and `rustls-ffi` enabled by default, speaking ClickHouse `FORMAT Native` for full columnar parity with TCP as well as `FORMAT RowBinary` and `FORMAT ArrowStream`.
@@ -85,6 +86,8 @@ names, and `#[serde(with = "serde_bytes")]` selects a binary `String` column
 instead of `Array(UInt8)`.
 
 ## Documentation
+
+- [`docs/native-tls-failover.md`](./docs/native-tls-failover.md): Native TLS trust, endpoint selection, circuit recovery, and live tests.
 
 - [`GLOSSARY.md`](./GLOSSARY.md): Ubiquitous domain language and core type definitions.
 - [`docs/adr/0001-dual-transport-synchronous-client.md`](./docs/adr/0001-dual-transport-synchronous-client.md): Dual-Transport Synchronous Client Architecture.

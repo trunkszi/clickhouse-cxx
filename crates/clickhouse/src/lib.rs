@@ -36,3 +36,10 @@ pub use row::{BlockView, Row};
 pub use serde_bridge::SerdeBridge;
 pub use wire_block::WireBlock;
 pub use wire_error::{WireError, WireResult};
+
+pub mod config;
+pub mod failover;
+pub mod tls;
+pub use config::ClientConfig;
+pub use failover::{EndpointHealth, EndpointSelection, FailoverEvent, FailoverPolicy};
+pub use tls::TlsSettings;
