@@ -1,0 +1,16 @@
+[package]
+name = "clickhouse-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static clickhouse-cpp bridge for the clickhouse-cxx workspace"
+
+[dependencies]
+cxx.workspace = true
+
+[build-dependencies]
+cmake = "0.1"
+cxx-build.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "clickhouse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Synchronous ClickHouse Native TCP client over clickhouse-cpp"
+
+[dependencies]
+clickhouse-macros = { path = "../clickhouse-macros" }
+clickhouse-sys = { path = "../clickhouse-sys" }
+cxx.workspace = true
+thiserror.workspace = true
+tracing = { workspace = true, optional = true }
+zerocopy.workspace = true
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+
+[lints]
+workspace = true
