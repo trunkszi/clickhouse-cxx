@@ -12,18 +12,19 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-cxx = "1.0"
-cxx-build = "1.0"
-thiserror = "2.0"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+cxx = { version = "1.0" }
+cxx-build = { version = "1.0" }
+thiserror = { version = "2.0" }
 zerocopy = { version = "0.8", features = ["alloc", "derive"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 syn = { version = "2", features = ["full", "extra-traits"] }
-quote = "1"
-proc-macro2 = "1"
-darling = "0.21"
-heck = "0.5"
-convert_case = "0.8"
-synstructure = "0.13"
+quote = { version = "1" }
+proc-macro2 = { version = "1" }
+darling = { version = "0.21" }
+heck = { version = "0.5" }
+convert_case = { version = "0.8" }
+synstructure = { version = "0.13" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

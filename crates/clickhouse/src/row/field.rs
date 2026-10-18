@@ -9,11 +9,14 @@ use crate::{
 /// A field schema used by generated SoA buffers and borrowed projections.
 pub trait Field: Sized + 'static {
     type Input<'a>: Copy;
-    type Buffer: Default;
+    type Buffer: Default + crate::MemoryBuffer;
     type View<'a>: Copy;
     fn reserve(buffer: &mut Self::Buffer, rows: usize);
     fn push(buffer: &mut Self::Buffer, value: Self::Input<'_>);
-    fn clear(buffer: &mut Self::Buffer);
+    /// Clear a field using the balanced default retention budget.
+    fn clear(buffer: &mut Self::Buffer) {
+        crate::MemoryBuffer::clear(buffer);
+    }
     fn len(buffer: &Self::Buffer) -> usize;
     fn capacity(buffer: &Self::Buffer) -> usize;
     fn empty() -> Self::Input<'static>;
@@ -44,7 +47,6 @@ macro_rules! fixed {
             type View<'a> = &'a [Self];
             fn reserve(b: &mut Self::Buffer, n: usize) { b.reserve(n); }
             fn push(b: &mut Self::Buffer, value: Self) { b.push(value); }
-            fn clear(b: &mut Self::Buffer) { b.clear(); }
             fn len(b: &Self::Buffer) -> usize { b.len() }
             fn capacity(b: &Self::Buffer) -> usize { b.capacity() }
             fn empty() -> Self { Self::default() }
@@ -73,9 +75,6 @@ impl Field for bool {
     }
     fn push(b: &mut Vec<u8>, value: bool) {
         b.push(u8::from(value));
-    }
-    fn clear(b: &mut Vec<u8>) {
-        b.clear();
     }
     fn len(b: &Vec<u8>) -> usize {
         b.len()

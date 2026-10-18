@@ -58,10 +58,6 @@ impl Field for String {
         b.bytes.extend_from_slice(s.as_bytes());
         b.offsets.push(b.bytes.len() as u64);
     }
-    fn clear(b: &mut FlatBytes) {
-        b.offsets.clear();
-        b.bytes.clear();
-    }
     fn len(b: &FlatBytes) -> usize {
         b.offsets.len()
     }
@@ -126,10 +122,6 @@ impl<T: Fixed> Field for Vec<T> {
     fn push(b: &mut Self::Buffer, v: &[T]) {
         b.values.extend_from_slice(v);
         b.offsets.push(b.values.len() as u64);
-    }
-    fn clear(b: &mut Self::Buffer) {
-        b.offsets.clear();
-        b.values.clear();
     }
     fn len(b: &Self::Buffer) -> usize {
         b.offsets.len()
@@ -201,10 +193,6 @@ impl Field for Bytes {
     fn push(b: &mut FlatBytes, v: &[u8]) {
         b.bytes.extend_from_slice(v);
         b.offsets.push(b.bytes.len() as u64);
-    }
-    fn clear(b: &mut FlatBytes) {
-        b.offsets.clear();
-        b.bytes.clear();
     }
     fn len(b: &FlatBytes) -> usize {
         b.offsets.len()

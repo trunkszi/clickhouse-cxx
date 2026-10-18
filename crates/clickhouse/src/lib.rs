@@ -8,6 +8,8 @@ extern crate self as clickhouse;
 pub use clickhouse_macros::Row;
 pub use clickhouse_sys as sys;
 
+pub mod buffer_policy;
+pub use buffer_policy::{BufferPolicy, MemoryBuffer};
 pub mod batch;
 pub mod block;
 pub mod client;

@@ -73,3 +73,71 @@ fn warmed_borrowed_paths_do_not_allocate() {
         view.get(0).unwrap().text.as_ptr()
     );
 }
+
+/// Burst capacity is trimmed once; later steady-state refills allocate nothing.
+#[test]
+fn integration_burst_trim_and_warm_refill() {
+    let mut batch = RecordBatch::default();
+    let value = RecordRef {
+        id: 1,
+        text: "payload",
+        values: &[1, 2, 3],
+        optional: Some("optional"),
+    };
+    for _ in 0..262_144 {
+        batch.push_ref(value);
+    }
+    let peak = batch.allocated_bytes();
+    batch.clear();
+    let warm = batch.allocated_bytes();
+    assert!(warm < peak);
+    assert!(warm <= clickhouse::BufferPolicy::default().max_retained_bytes);
+    assert!(batch.id.capacity() >= 4096);
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    ENABLED.store(true, Ordering::Relaxed);
+    batch.clear();
+    for _ in 0..4096 {
+        batch.push_ref(value);
+    }
+    ENABLED.store(false, Ordering::Relaxed);
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(batch.allocated_bytes(), warm);
+    assert_eq!(batch.len(), 4096);
+    batch.shrink_to_fit();
+    assert_eq!(batch.len(), 4096);
+    assert!(batch.allocated_bytes() < warm);
+    batch.clear_with_policy(clickhouse::BufferPolicy::minimal());
+    assert_eq!(batch.allocated_bytes(), 0);
+}
+
+/// Recursive blocks reuse each nested Vec after a bounded clear.
+#[test]
+fn integration_block_refill_reuses_capacity() {
+    let mut batch = RecordBatch::default();
+    for _ in 0..4096 {
+        batch.push_ref(RecordRef {
+            id: 8,
+            text: "text",
+            values: &[4, 5],
+            optional: Some("yes"),
+        });
+    }
+    let source = batch.to_block().unwrap();
+    let mut target = batch.to_block().unwrap();
+    let bytes = target.allocated_bytes();
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    ENABLED.store(true, Ordering::Relaxed);
+    target.clear();
+    target.refill_from(&source).unwrap();
+    ENABLED.store(false, Ordering::Relaxed);
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(target.allocated_bytes(), bytes);
+    assert_eq!(
+        RecordBlockView::try_from_block(&target)
+            .unwrap()
+            .get(4095)
+            .unwrap()
+            .id,
+        8
+    );
+}

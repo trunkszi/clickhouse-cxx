@@ -7,7 +7,7 @@
 use super::cpp_bridge;
 use crate::{Block, Client, NativeBlock, Result, error::Error, row::RowClient};
 
-fn to_native(block: &Block) -> Result<NativeBlock> {
+pub(crate) fn to_native(block: &Block) -> Result<NativeBlock> {
     let mut native = NativeBlock::new();
     for index in 0..block.column_count() {
         let column = block.column(index)?;
@@ -17,7 +17,7 @@ fn to_native(block: &Block) -> Result<NativeBlock> {
     Ok(native)
 }
 
-fn from_native(native: &NativeBlock) -> Result<Block> {
+pub(crate) fn from_native(native: &NativeBlock) -> Result<Block> {
     let mut block = Block::with_capacity(native.columns(), native.rows());
     for index in 0..native.columns() {
         let name = native.column_name(index);

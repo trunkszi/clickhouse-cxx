@@ -3,7 +3,7 @@
 #[path = "support/docker.rs"]
 mod docker;
 
-use clickhouse::{Client, Endpoint, Row, row::RowClient};
+use clickhouse::{BufferPolicy, Client, Endpoint, Row, row::RowClient};
 
 #[derive(Row)]
 #[row(table = "native_events")]
@@ -40,6 +40,40 @@ fn native_tcp_row_roundtrip() {
         .expect("create table");
 
     let mut batch = NativeEventBatch::with_capacity(2);
+    // A burst is submitted before trimming; the next batch reuses warm capacity.
+    for id in 0..131_072 {
+        batch.push_ref(NativeEventRef {
+            id,
+            delta: -1,
+            price: 10.5,
+            symbol: "BTC",
+            payload: &[0, 255, 7],
+        });
+    }
+    let peak = batch.allocated_bytes();
+    client.insert_batch(&batch).expect("insert burst");
+    let mut count = 0;
+    client
+        .query_views::<NativeEvent, _>(
+            "SELECT id, delta, price, symbol, payload FROM native_events",
+            |view| {
+                for row in view.iter() {
+                    assert_eq!(row.delta, -1);
+                    assert_eq!(row.payload, &[0, 255, 7]);
+                    count += 1;
+                }
+                Ok(())
+            },
+        )
+        .expect("read burst");
+    assert_eq!(count, 131_072);
+    batch.clear();
+    assert!(batch.allocated_bytes() < peak);
+    assert!(batch.allocated_bytes() <= BufferPolicy::default().max_retained_bytes);
+    assert!(batch.id.capacity() >= 4096);
+    client
+        .execute("TRUNCATE TABLE native_events")
+        .expect("truncate burst");
     batch.push_ref(NativeEventRef {
         id: 1,
         delta: -3,
