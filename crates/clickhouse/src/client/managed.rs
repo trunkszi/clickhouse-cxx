@@ -130,12 +130,18 @@ impl Client {
         self.managed.health[self.managed.current].failure(self.managed.policy, error.to_string());
         Error::native(error.to_string())
     }
-    pub(super) fn prepare(&mut self) -> Result<(), Error> {
+    /// Reject operations until a contained observer failure is acknowledged.
+    fn observer_ready(&self) -> Result<(), Error> {
         if self.managed.callback_error.is_some() {
             return Err(Error::native(
                 "failover observer panicked; retrieve callback error before reuse",
             ));
         }
+        Ok(())
+    }
+
+    pub(super) fn prepare(&mut self) -> Result<(), Error> {
+        self.observer_ready()?;
         if self.managed.needs_probe || self.managed.policy.ping {
             let started = Instant::now();
             match sys::ffi::ping(self.inner.pin_mut()) {
@@ -151,7 +157,7 @@ impl Client {
                 }
             }
         }
-        Ok(())
+        self.observer_ready()
     }
 }
 impl Managed {

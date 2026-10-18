@@ -14,6 +14,8 @@ use clickhouse::{
 #[path = "support/tcps_server.rs"]
 mod tcps_server;
 use tcps_server::{Server, issue_certs, server_report};
+#[path = "support/disconnecting_proxy.rs"]
+mod disconnecting_proxy;
 
 #[test]
 fn live_clickhouse_transports_and_failover() {
@@ -61,6 +63,7 @@ fn exercise(server: &Server) -> Result<(), String> {
     policy_matrix(server)?;
     policy_selection(server)?;
     observer_panic(server)?;
+    reconnect_observer_blocks_write(server)?;
     #[cfg(feature = "tracing")]
     tracing_transition(server)?;
     Ok(())
@@ -279,6 +282,52 @@ fn observer_panic(server: &Server) -> Result<(), String> {
         return Err("session did not recover after consuming the observer diagnostic".into());
     }
     Ok(())
+}
+
+/// A reconnect observer failure rejects the pending write before it reaches the server.
+fn reconnect_observer_blocks_write(server: &Server) -> Result<(), String> {
+    let mut proxy = disconnecting_proxy::DisconnectingProxy::start(server.ports.tcp)?;
+    let endpoints = format!(
+        "tcp://127.0.0.1:{},tcps://127.0.0.1:{}",
+        proxy.port, server.ports.tcps
+    );
+    let config = ClientConfig::parse(&endpoints)
+        .map_err(|e| e.to_string())?
+        .with_tls(tls_for(&server.ca_pem))
+        .with_policy(policy().with_ping_before_query(true));
+    let mut client = Client::new(config).map_err(|e| e.to_string())?;
+    client.on_failover(|_| panic!("reconnect observer panic fixture"));
+    proxy.disconnect()?;
+    let ddl = "CREATE TABLE observer_guard (id UInt64) ENGINE=Memory";
+    let error = client
+        .execute(ddl)
+        .expect_err("observer failure must prevent the write");
+    if !error.to_string().contains("observer panicked") {
+        return Err(format!("wrong reconnect admission error: {error}"));
+    }
+    if client.current_endpoint().port() != server.ports.tcps {
+        return Err("preflight did not reach the healthy TCPS endpoint".into());
+    }
+    let direct = format!("tcps://127.0.0.1:{}", server.ports.tcps);
+    let config = ClientConfig::parse(&direct)
+        .map_err(|e| e.to_string())?
+        .with_tls(tls_for(&server.ca_pem));
+    let mut observer = Client::new(config).map_err(|e| e.to_string())?;
+    let count =
+        "SELECT count() FROM system.tables WHERE database='default' AND name='observer_guard'";
+    if observer.query_u64(count).map_err(|e| e.to_string())? != 0 {
+        return Err("pending write reached the server after observer failure".into());
+    }
+    if client.take_callback_error().is_none() || client.take_callback_error().is_some() {
+        return Err("reconnect observer diagnostic was not consumed exactly once".into());
+    }
+    client.execute(ddl).map_err(|e| e.to_string())?;
+    if observer.query_u64(count).map_err(|e| e.to_string())? != 1 {
+        return Err("write did not resume after observer diagnostic acknowledgement".into());
+    }
+    observer
+        .execute("DROP TABLE observer_guard")
+        .map_err(|e| e.to_string())
 }
 
 fn policy_selection(server: &Server) -> Result<(), String> {

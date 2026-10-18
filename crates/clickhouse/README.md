@@ -91,3 +91,20 @@ share one typed API.
 `#[serde(rename_all = "...")]` and `#[serde(rename = "...")]` select column
 names, and `#[serde(with = "serde_bytes")]` selects a binary `String` column
 instead of `Array(UInt8)`.
+
+## Native TLS and failover tutorial
+
+[`08_tls_and_failover_policy`](examples/08_tls_and_failover_policy.rs) runs offline
+by default and demonstrates four endpoint-selection policies. Its optional live
+section uses verified Native TCPS, CA/SNI configuration, local `Rc<RefCell<_>>`
+observers, health and circuit diagnostics, and explicit reconnection.
+
+```bash
+cargo run -p clickhouse --example 08_tls_and_failover_policy
+CLICKHOUSE_TCPS_URLS=tcps://127.0.0.1:9440 \
+CLICKHOUSE_CA_PEM=/path/to/ca.pem CLICKHOUSE_TLS_SNI=localhost \
+  cargo run -p clickhouse --example 08_tls_and_failover_policy
+```
+
+Clients and their observers stay on one thread. Connection recovery does not
+automatically replay writes whose server-side outcome may be uncertain.
