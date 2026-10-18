@@ -16,7 +16,7 @@ const KIND_I64: u32 = 8;
 const KIND_F32: u32 = 9;
 const KIND_F64: u32 = 10;
 
-/// A fixed-width primitive accepted by [`Block::column_slice`].
+/// A fixed-width primitive accepted by [`crate::Block::column_slice`].
 pub trait FixedColumn: FromBytes + Immutable + KnownLayout {
     /// Kind tag shared with the C++ bridge.
     const KIND: u32;
