@@ -31,17 +31,28 @@ fn resolve_source() -> PathBuf {
 
 /// Compile-time cache next to Cargo's target directory.
 fn target_cache_dir() -> PathBuf {
-    if let Ok(configured) = env::var("CARGO_TARGET_DIR") {
-        return PathBuf::from(configured)
-            .join("vendor-cache")
-            .join("clickhouse-cpp");
-    }
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
-    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out.
-    if let Some(target) = out_dir.ancestors().nth(4) {
-        return target.join("vendor-cache").join("clickhouse-cpp");
-    }
-    out_dir.join("clickhouse-cpp-src")
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                manifest.join("../..").join(path)
+            }
+        })
+        .or_else(|| {
+            out_dir
+                .ancestors()
+                .find(|path| path.file_name().is_some_and(|name| name == "build"))
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+        });
+    target_dir
+        .map(|path| path.join("vendor-cache/clickhouse-cpp"))
+        .unwrap_or_else(|| out_dir.join("clickhouse-cpp-src"))
 }
 
 /// A source tree is usable when the public header is present.

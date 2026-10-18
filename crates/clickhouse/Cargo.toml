@@ -5,13 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "Synchronous ClickHouse client with derived row batches and Native TCP transport"
 
+[lib]
+bench = false
+
 [dependencies]
 clickhouse-macros = { path = "../clickhouse-macros" }
 clickhouse-sys = { path = "../clickhouse-sys" }
-cxx.workspace = true
-thiserror.workspace = true
+cxx = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
-zerocopy.workspace = true
+zerocopy = { workspace = true }
 
 [features]
 default = []
@@ -19,3 +22,18 @@ tracing = ["dep:tracing"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "memory_retention_balance"
+harness = false
+
+[[bench]]
+name = "zero_copy_and_row_batch"
+harness = false
+
+[[bench]]
+name = "block_columns"
+harness = false

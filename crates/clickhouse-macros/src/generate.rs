@@ -56,7 +56,13 @@ pub fn expand(model: Model) -> TokenStream {
             type Row=#ident #type_generics;
             fn with_capacity(rows:usize)->Self{let mut batch=Self::default();#(<#types as #runtime::row::Field>::reserve(&mut batch.#names,rows);)*batch}
             fn len(&self)->usize{let counts=[#(<#types as #runtime::row::Field>::len(&self.#names)),*];counts[0]}
-            fn clear(&mut self){#(<#types as #runtime::row::Field>::clear(&mut self.#names);)*}
+            fn allocated_bytes(&self)->usize{0 #(+ #runtime::MemoryBuffer::allocated_bytes(&self.#names))*}
+            fn clear_with_policy(&mut self,policy:#runtime::BufferPolicy){
+                let rows=[#(#runtime::MemoryBuffer::row_capacity(&self.#names)),*].into_iter().max().unwrap_or(0);
+                let retention=policy.retention(rows,self.allocated_bytes());
+                #(#runtime::MemoryBuffer::clear_retained(&mut self.#names,retention);)*
+            }
+            fn shrink_to_fit(&mut self){#(#runtime::MemoryBuffer::shrink_to_fit(&mut self.#names);)*}
             fn push(&mut self,row:&Self::Row){self.push_ref(#row_ref{#(#names:#borrow),*});}
             fn to_block(&self)->#runtime::Result<#runtime::Block>{let mut block=#runtime::Block::with_capacity(#field_count,self.len());#(block.append_column(<#types as #runtime::row::Field>::column(&self.#names,#columns)?)?;)*Ok(block)}
         }
@@ -67,8 +73,16 @@ pub fn expand(model: Model) -> TokenStream {
             pub fn len(&self)->usize{<Self as #runtime::Batch>::len(self)}
             #[doc="Whether there are no accumulated rows."]
             pub fn is_empty(&self)->bool{self.len()==0}
-            #[doc="Clear all column lengths while retaining every allocation."]
+            #[doc="Clear all column lengths using the default aggregate retention budget."]
             pub fn clear(&mut self){<Self as #runtime::Batch>::clear(self);}
+            #[doc="Exact aggregate Vec capacity in bytes."]
+            pub fn allocated_bytes(&self)->usize{<Self as #runtime::Batch>::allocated_bytes(self)}
+            #[doc="Clear lengths and trim burst capacity to an aggregate warm budget."]
+            pub fn clear_with_policy(&mut self,policy:#runtime::BufferPolicy){<Self as #runtime::Batch>::clear_with_policy(self,policy);}
+            #[doc="Clear lengths without reclaiming warmed allocations."]
+            pub fn clear_unbounded(&mut self){<Self as #runtime::Batch>::clear_unbounded(self);}
+            #[doc="Release slack capacity while preserving current values."]
+            pub fn shrink_to_fit(&mut self){<Self as #runtime::Batch>::shrink_to_fit(self);}
             #[doc="Copy a borrowed source row into reusable flat column buffers."]
             pub fn push(&mut self,row:&#ident #type_generics){<Self as #runtime::Batch>::push(self,row);}
             #[doc="Append borrowed field values without allocating per-row owned strings or arrays."]

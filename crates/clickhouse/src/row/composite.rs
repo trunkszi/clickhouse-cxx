@@ -46,10 +46,6 @@ impl<T: Field> Field for Option<T> {
             None => T::push(&mut b.values, T::empty()),
         };
     }
-    fn clear(b: &mut Self::Buffer) {
-        b.null_map.clear();
-        T::clear(&mut b.values);
-    }
     fn len(b: &Self::Buffer) -> usize {
         b.null_map.len()
     }
@@ -214,7 +210,6 @@ macro_rules! map_field {
             type View<'a>=MapView<'a,K,V>;
             fn reserve(b:&mut Self::Buffer,n:usize) {b.offsets.reserve(n);}
             fn push(b:&mut Self::Buffer,v:Self::Input<'_>) {for(k,v)in v.iter(){K::push(&mut b.keys,k);V::push(&mut b.values,v);}b.offsets.push(K::len(&b.keys)as u64);}
-            fn clear(b:&mut Self::Buffer){b.offsets.clear();K::clear(&mut b.keys);V::clear(&mut b.values);}
             fn len(b:&Self::Buffer)->usize{b.offsets.len()}
             fn capacity(b:&Self::Buffer)->usize{b.offsets.capacity()}
             fn empty()->Self::Input<'static>{MapRef::Empty}

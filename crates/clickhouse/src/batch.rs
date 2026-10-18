@@ -8,7 +8,20 @@ pub trait Batch: Default {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn clear(&mut self);
+    /// Clear lengths using the default aggregate retention budget.
+    fn clear(&mut self) {
+        self.clear_with_policy(crate::BufferPolicy::default());
+    }
+    /// Exact aggregate capacity of the underlying Vec buffers in bytes.
+    fn allocated_bytes(&self) -> usize;
+    /// Clear lengths and reclaim burst capacity above the aggregate budget.
+    fn clear_with_policy(&mut self, policy: crate::BufferPolicy);
+    /// Clear lengths without reclaiming any capacity.
+    fn clear_unbounded(&mut self) {
+        self.clear_with_policy(crate::BufferPolicy::unbounded());
+    }
+    /// Release unused capacity while preserving current values.
+    fn shrink_to_fit(&mut self);
     /// Copy a borrowed row once into reusable column buffers.
     fn push(&mut self, row: &Self::Row);
     fn extend_from_slice(&mut self, rows: &[Self::Row]) {

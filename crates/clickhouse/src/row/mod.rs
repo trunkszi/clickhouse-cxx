@@ -2,7 +2,8 @@
 mod client;
 mod cpp_bridge;
 mod field;
-mod native;
+mod memory;
+pub(crate) mod native;
 mod owned;
 pub use client::RowClient;
 pub use owned::{OwnedField, OwnedRow};

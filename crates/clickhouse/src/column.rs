@@ -3,7 +3,7 @@ use std::borrow::Cow;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::{Result, error::schema};
+use crate::{BufferPolicy, MemoryBuffer, Result, buffer_policy::Retention, error::schema};
 /// Aligned storage preserves at least the alignment of all numeric primitives.
 #[derive(Default)]
 pub struct AlignedBytes {
@@ -57,6 +57,100 @@ pub struct Column {
     pub(crate) rows: usize,
 }
 impl Column {
+    pub(crate) fn same_storage(&self, other: &Self) -> bool {
+        if self.name != other.name || self.type_name != other.type_name {
+            return false;
+        }
+        match (&self.data, &other.data) {
+            (ColumnData::Fixed(_), ColumnData::Fixed(_))
+            | (ColumnData::Strings { .. }, ColumnData::Strings { .. }) => true,
+            (ColumnData::Array { values: a, .. }, ColumnData::Array { values: b, .. })
+            | (ColumnData::Nullable { values: a, .. }, ColumnData::Nullable { values: b, .. }) => {
+                a.same_storage(b)
+            }
+            (
+                ColumnData::Map {
+                    keys: a, values: b, ..
+                },
+                ColumnData::Map {
+                    keys: c, values: d, ..
+                },
+            ) => a.same_storage(c) && b.same_storage(d),
+            _ => false,
+        }
+    }
+    pub(crate) fn copy_values(&mut self, source: &Self) {
+        match (&mut self.data, &source.data) {
+            (ColumnData::Fixed(a), ColumnData::Fixed(b)) => {
+                a.words.clear();
+                a.words.extend_from_slice(&b.words);
+                a.len = b.len;
+            }
+            (
+                ColumnData::Strings {
+                    offsets: a,
+                    bytes: b,
+                },
+                ColumnData::Strings {
+                    offsets: c,
+                    bytes: d,
+                },
+            ) => {
+                a.clear();
+                a.extend_from_slice(c);
+                b.clear();
+                b.extend_from_slice(d);
+            }
+            (
+                ColumnData::Array {
+                    offsets: a,
+                    values: b,
+                },
+                ColumnData::Array {
+                    offsets: c,
+                    values: d,
+                },
+            ) => {
+                a.clear();
+                a.extend_from_slice(c);
+                b.copy_values(d);
+            }
+            (
+                ColumnData::Nullable {
+                    null_map: a,
+                    values: b,
+                },
+                ColumnData::Nullable {
+                    null_map: c,
+                    values: d,
+                },
+            ) => {
+                a.clear();
+                a.extend_from_slice(c);
+                b.copy_values(d);
+            }
+            (
+                ColumnData::Map {
+                    offsets: a,
+                    keys: b,
+                    values: c,
+                },
+                ColumnData::Map {
+                    offsets: d,
+                    keys: e,
+                    values: f,
+                },
+            ) => {
+                a.clear();
+                a.extend_from_slice(d);
+                b.copy_values(e);
+                c.copy_values(f);
+            }
+            _ => unreachable!("storage compatibility is checked before copying"),
+        }
+        self.rows = source.rows;
+    }
+
     pub fn len(&self) -> usize {
         self.rows
     }
@@ -73,32 +167,25 @@ impl Column {
         <[T]>::ref_from_bytes(bytes.as_bytes())
             .map_err(|_| schema("fixed column alignment or width mismatch"))
     }
+    /// Exact capacity in bytes of every nested value Vec.
+    pub fn allocated_bytes(&self) -> usize {
+        MemoryBuffer::allocated_bytes(self)
+    }
+    /// Clear rows using the balanced default retention budget.
     pub fn clear(&mut self) {
-        self.rows = 0;
-        match &mut self.data {
-            ColumnData::Fixed(bytes) => bytes.clear(),
-            ColumnData::Strings { offsets, bytes } => {
-                offsets.clear();
-                bytes.clear();
-            }
-            ColumnData::Array { offsets, values } => {
-                offsets.clear();
-                values.clear();
-            }
-            ColumnData::Nullable { null_map, values } => {
-                null_map.clear();
-                values.clear();
-            }
-            ColumnData::Map {
-                offsets,
-                keys,
-                values,
-            } => {
-                offsets.clear();
-                keys.clear();
-                values.clear();
-            }
-        }
+        MemoryBuffer::clear(self);
+    }
+    /// Clear rows with one budget shared across nested value buffers.
+    pub fn clear_with_policy(&mut self, policy: BufferPolicy) {
+        MemoryBuffer::clear_with_policy(self, policy);
+    }
+    /// Clear rows without reclaiming warmed capacity.
+    pub fn clear_unbounded(&mut self) {
+        MemoryBuffer::clear_unbounded(self);
+    }
+    /// Release unused value capacity while preserving current rows.
+    pub fn shrink_to_fit(&mut self) {
+        MemoryBuffer::shrink_to_fit(self);
     }
 }
 /// Check complete offsets before any row projection uses them.
@@ -111,4 +198,100 @@ pub fn validate_offsets(offsets: &[u64], values: usize) -> Result<()> {
         return Err(schema("invalid flat column offsets"));
     }
     Ok(())
+}
+
+impl MemoryBuffer for Column {
+    fn allocated_bytes(&self) -> usize {
+        match &self.data {
+            ColumnData::Fixed(b) => b.words.allocated_bytes(),
+            ColumnData::Strings { offsets, bytes } => {
+                offsets.allocated_bytes() + bytes.allocated_bytes()
+            }
+            ColumnData::Array { offsets, values } => {
+                offsets.allocated_bytes() + values.allocated_bytes()
+            }
+            ColumnData::Nullable { null_map, values } => {
+                null_map.allocated_bytes() + values.allocated_bytes()
+            }
+            ColumnData::Map {
+                offsets,
+                keys,
+                values,
+            } => offsets.allocated_bytes() + keys.allocated_bytes() + values.allocated_bytes(),
+        }
+    }
+    fn row_capacity(&self) -> usize {
+        match &self.data {
+            ColumnData::Fixed(b) => {
+                let width = match self.type_name.as_ref() {
+                    "UInt8" | "Int8" | "Bool" => 1,
+                    "UInt16" | "Int16" => 2,
+                    "UInt32" | "Int32" | "Float32" => 4,
+                    "UInt64" | "Int64" | "Float64" => 8,
+                    _ => 16,
+                };
+                b.words.allocated_bytes() / width
+            }
+            ColumnData::Strings { offsets, .. }
+            | ColumnData::Array { offsets, .. }
+            | ColumnData::Map { offsets, .. } => offsets.capacity(),
+            ColumnData::Nullable { null_map, .. } => null_map.capacity(),
+        }
+    }
+    fn clear_retained(&mut self, retention: Retention) {
+        match &mut self.data {
+            ColumnData::Fixed(b) => {
+                b.words.clear_retained(retention);
+                b.len = 0;
+            }
+            ColumnData::Strings { offsets, bytes } => {
+                offsets.clear_retained(retention);
+                bytes.clear_retained(retention);
+            }
+            ColumnData::Array { offsets, values } => {
+                offsets.clear_retained(retention);
+                values.clear_retained(retention);
+            }
+            ColumnData::Nullable { null_map, values } => {
+                null_map.clear_retained(retention);
+                values.clear_retained(retention);
+            }
+            ColumnData::Map {
+                offsets,
+                keys,
+                values,
+            } => {
+                offsets.clear_retained(retention);
+                keys.clear_retained(retention);
+                values.clear_retained(retention);
+            }
+        }
+        self.rows = 0;
+    }
+    fn shrink_to_fit(&mut self) {
+        match &mut self.data {
+            ColumnData::Fixed(b) => b.words.shrink_to_fit(),
+            ColumnData::Strings { offsets, bytes } => {
+                offsets.shrink_to_fit();
+                bytes.shrink_to_fit();
+            }
+            ColumnData::Array { offsets, values } => {
+                offsets.shrink_to_fit();
+                values.shrink_to_fit();
+            }
+            ColumnData::Nullable { null_map, values } => {
+                null_map.shrink_to_fit();
+                values.shrink_to_fit();
+            }
+            ColumnData::Map {
+                offsets,
+                keys,
+                values,
+            } => {
+                offsets.shrink_to_fit();
+                keys.shrink_to_fit();
+                values.shrink_to_fit();
+            }
+        }
+    }
 }

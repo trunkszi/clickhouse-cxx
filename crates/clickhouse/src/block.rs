@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::{
-    Column, Error, Result,
+    BufferPolicy, Column, Error, MemoryBuffer, Result,
     column::{AlignedBytes, ColumnData, validate_offsets},
     error::schema,
 };
@@ -15,6 +15,38 @@ pub struct Block {
     rows: usize,
 }
 impl Block {
+    /// Refill matching schema columns in place, reusing nested Vec capacity.
+    /// # Errors
+    /// Any schema or row-count mismatch rejects the entire refill before mutation.
+    pub fn refill_from(&mut self, source: &Self) -> Result<()> {
+        if self.columns.len() != source.columns.len()
+            || self
+                .columns
+                .iter()
+                .zip(&source.columns)
+                .any(|(a, b)| !a.same_storage(b) || b.len() != source.rows)
+        {
+            return Err(schema("block refill schema or row count mismatch"));
+        }
+        for (target, input) in self.columns.iter_mut().zip(&source.columns) {
+            target.copy_values(input);
+        }
+        self.rows = source.rows;
+        Ok(())
+    }
+
+    /// Copy supported row columns into a native transport block.
+    /// # Errors
+    /// Unsupported column types or native conversion failures return an error.
+    pub fn to_native(&self) -> Result<crate::NativeBlock> {
+        crate::row::native::to_native(self)
+    }
+    /// Copy supported columns from a native transport block into aligned buffers.
+    /// # Errors
+    /// Unsupported kinds or invalid native projections return an error.
+    pub fn from_native(native: &crate::NativeBlock) -> Result<Self> {
+        crate::row::native::from_native(native)
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -30,11 +62,55 @@ impl Block {
     pub fn column_count(&self) -> usize {
         self.columns.len()
     }
+    /// Exact retained capacity of the column Vec and nested value Vecs in bytes.
+    pub fn allocated_bytes(&self) -> usize {
+        self.columns.allocated_bytes()
+            + self
+                .columns
+                .iter()
+                .map(Column::allocated_bytes)
+                .sum::<usize>()
+    }
+    /// Clear lengths using the balanced default aggregate budget.
     pub fn clear(&mut self) {
-        for c in &mut self.columns {
-            c.clear();
+        self.clear_with_policy(BufferPolicy::default());
+    }
+    /// Clear lengths and trim burst capacity across all columns.
+    /// Budgets smaller than the schema Vec release the schema as well; otherwise
+    /// column names and types remain available for in-place refill.
+    pub fn clear_with_policy(&mut self, policy: BufferPolicy) {
+        if self.columns.allocated_bytes() > policy.max_retained_bytes {
+            self.columns.clear();
+            self.columns.shrink_to_fit();
+        } else {
+            let bytes = self.columns.iter().map(Column::allocated_bytes).sum();
+            let rows = self
+                .columns
+                .iter()
+                .map(MemoryBuffer::row_capacity)
+                .max()
+                .unwrap_or(0);
+            let budget = BufferPolicy {
+                max_retained_bytes: policy.max_retained_bytes - self.columns.allocated_bytes(),
+                ..policy
+            };
+            let retention = budget.retention(rows, bytes);
+            for column in &mut self.columns {
+                column.clear_retained(retention);
+            }
         }
         self.rows = 0;
+    }
+    /// Clear lengths without reclaiming warmed capacity.
+    pub fn clear_unbounded(&mut self) {
+        self.clear_with_policy(BufferPolicy::unbounded());
+    }
+    /// Release unused capacity while preserving current rows and schema.
+    pub fn shrink_to_fit(&mut self) {
+        for column in &mut self.columns {
+            column.shrink_to_fit();
+        }
+        self.columns.shrink_to_fit();
     }
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
@@ -114,7 +190,7 @@ impl Block {
         std::str::from_utf8(self.column_bytes(col_idx, row_idx)?)
             .map_err(|_| schema("invalid UTF-8 string"))
     }
-    /// Append or refill one owned column; reject duplicate nonempty columns.
+    /// Append one owned column; reject duplicate column names.
     /// # Errors
     /// Row-count or column-name mismatches reject the insertion.
     pub fn append_column(&mut self, column: Column) -> Result<()> {
