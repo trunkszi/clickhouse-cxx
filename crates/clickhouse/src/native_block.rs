@@ -17,7 +17,7 @@ const KIND_F32: u32 = 9;
 const KIND_F64: u32 = 10;
 
 /// A fixed-width primitive accepted by [`crate::Block::column_slice`].
-pub trait FixedColumn: FromBytes + Immutable + KnownLayout {
+pub trait FixedColumn: FromBytes + Immutable + KnownLayout + Copy {
     /// Kind tag shared with the C++ bridge.
     const KIND: u32;
 }
@@ -103,6 +103,15 @@ impl NativeBlock {
     /// Kind tag of a column by index.
     pub fn column_kind(&self, index: usize) -> u32 {
         sys::ffi::block_column_kind(&self.inner, index)
+    }
+
+    /// Server type name of a column by index.
+    ///
+    /// # Errors
+    /// Returns [`Error::Block`] when the index is outside the schema.
+    pub fn column_type(&self, index: usize) -> Result<String, Error> {
+        sys::ffi::block_column_type(&self.inner, index)
+            .map_err(|error| Error::block(format!("column type failed: {error}")))
     }
 
     /// Append a `UInt8` column.
@@ -203,6 +212,36 @@ impl NativeBlock {
     /// column or the native append fails.
     pub fn push_f64(&mut self, name: &str, values: &[f64]) -> Result<(), Error> {
         push_column!(self, block_append_f64, f64, name, values)
+    }
+
+    /// Append a `UInt64` column.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the row count conflicts with an earlier
+    /// column or the native append fails.
+    pub fn append_u64(&mut self, name: &str, values: &[u64]) -> Result<(), Error> {
+        self.push_u64(name, values)
+    }
+
+    /// Append an `Int64` column.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the row count conflicts with an earlier
+    /// column or the native append fails.
+    pub fn append_i64(&mut self, name: &str, values: &[i64]) -> Result<(), Error> {
+        self.push_i64(name, values)
+    }
+
+    /// Append a `Float64` column.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the row count conflicts with an earlier
+    /// column or the native append fails.
+    pub fn append_f64(&mut self, name: &str, values: &[f64]) -> Result<(), Error> {
+        self.push_f64(name, values)
     }
 
     /// Append a `String` column.
@@ -399,6 +438,53 @@ impl NativeBlock {
         dst.clear();
         dst.extend_from_slice(bytes);
         Ok(bytes.len())
+    }
+
+    /// Copy one fixed-width column into caller-supplied storage.
+    ///
+    /// Copies `min(rows, dst.len())` elements and returns the number copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the column index is outside the schema,
+    /// the column has a different fixed-width kind, or its native bytes cannot
+    /// be viewed as `T`.
+    pub fn copy_column_into_slice<T: FixedColumn>(
+        &self,
+        index: usize,
+        dst: &mut [T],
+    ) -> Result<usize, Error> {
+        let columns = self.columns();
+        if index >= columns {
+            return Err(Error::block(format!(
+                "column index {index} is outside {columns} columns"
+            )));
+        }
+        let kind = sys::ffi::block_column_kind(&self.inner, index);
+        if kind != T::KIND {
+            return Err(Error::block(format!(
+                "column {index} has kind {kind}, expected {}",
+                T::KIND
+            )));
+        }
+        let bytes = sys::ffi::block_column_bytes(&self.inner, index);
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let address = bytes.as_ptr() as usize;
+        let required = std::mem::align_of::<T>();
+        if !address.is_multiple_of(required) {
+            return Err(Error::block(format!(
+                "column {index} data pointer 0x{address:x} is not {required}-byte aligned (kind \
+                 {kind}, bytes {})",
+                bytes.len()
+            )));
+        }
+        let source = <[T]>::ref_from_bytes(bytes)
+            .map_err(|error| Error::block(format!("column {index} cast failed: {error:?}")))?;
+        let copied = source.len().min(dst.len());
+        dst[..copied].copy_from_slice(&source[..copied]);
+        Ok(copied)
     }
 
     /// Materialize a `String` column.

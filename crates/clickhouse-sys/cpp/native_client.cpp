@@ -67,6 +67,12 @@ clickhouse::ClientOptions client_options(const NativeOpen& opts) {
     options.SetTcpKeepAliveIdle(std::chrono::seconds(opts.keepalive_idle_secs));
     options.SetTcpKeepAliveInterval(std::chrono::seconds(opts.keepalive_interval_secs));
     options.SetTcpKeepAliveCount(opts.keepalive_count);
+    switch (opts.compression) {
+    case 0: options.SetCompressionMethod(clickhouse::CompressionMethod::None); break;
+    case 1: options.SetCompressionMethod(clickhouse::CompressionMethod::LZ4); break;
+    case 2: options.SetCompressionMethod(clickhouse::CompressionMethod::ZSTD); break;
+    default: throw std::runtime_error("fatal: unknown block compression method");
+    }
 
     std::vector<clickhouse::Endpoint> extras;
     extras.reserve(opts.extra_hosts.size());

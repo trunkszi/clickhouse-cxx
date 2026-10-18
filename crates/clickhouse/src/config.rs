@@ -1,7 +1,8 @@
 //! Native endpoint credentials, security, and failover configuration.
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
-use crate::{Endpoint, Error, FailoverPolicy, TlsSettings};
+use crate::{CompressionMethod, Endpoint, Error, FailoverPolicy, TlsSettings};
+use crate::threading::WorkerBalance;
 
 pub(crate) type FailoverCallback = Box<dyn FnMut(&crate::FailoverEvent<'_>)>;
 
@@ -14,7 +15,30 @@ pub struct ClientConfig<'a> {
     pub(crate) password: Cow<'a, str>,
     pub(crate) database: Cow<'a, str>,
     pub(crate) tls: TlsSettings<'a>,
+    pub(crate) compression: CompressionMethod,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) workers: usize,
+    pub(crate) balance: WorkerBalance,
 }
+
+impl Default for ClientConfig<'static> {
+    fn default() -> Self {
+        Self {
+            callback: None,
+            endpoints: Vec::new(),
+            policy: FailoverPolicy::new(),
+            user: "default".into(),
+            password: "".into(),
+            database: "default".into(),
+            tls: TlsSettings::new(),
+            compression: CompressionMethod::None,
+            timeout: None,
+            workers: 1,
+            balance: WorkerBalance::RoundRobin,
+        }
+    }
+}
+
 impl<'a> ClientConfig<'a> {
     /// Parse Native TCP or TCPS endpoint addresses.
     /// # Errors
@@ -39,6 +63,10 @@ impl<'a> ClientConfig<'a> {
             password: "".into(),
             database: "default".into(),
             tls: TlsSettings::new(),
+            compression: CompressionMethod::None,
+            timeout: None,
+            workers: 1,
+            balance: WorkerBalance::RoundRobin,
         })
     }
     /// Observe endpoint transitions, including initial connection failover.
@@ -78,6 +106,32 @@ impl<'a> ClientConfig<'a> {
     #[must_use]
     pub fn with_tls(mut self, tls: TlsSettings<'a>) -> Self {
         self.tls = tls;
+        self
+    }
+    /// Set the block compression method for every connection.
+    #[must_use]
+    pub fn with_compression(mut self, value: CompressionMethod) -> Self {
+        self.compression = value;
+        self
+    }
+    /// Override connect, receive, and send deadlines with one duration.
+    #[must_use]
+    pub fn with_timeout(mut self, value: Duration) -> Self {
+        self.timeout = Some(value);
+        self
+    }
+    /// Set the number of local connection slots per calling thread.
+    ///
+    /// Zero is normalized to one.
+    #[must_use]
+    pub fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = workers.max(1);
+        self
+    }
+    /// Set the load-balancing strategy used across local slots.
+    #[must_use]
+    pub fn with_balance(mut self, balance: WorkerBalance) -> Self {
+        self.balance = balance;
         self
     }
 }

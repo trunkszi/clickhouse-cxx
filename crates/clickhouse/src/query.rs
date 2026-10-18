@@ -1,0 +1,273 @@
+//! Borrowed query metadata and synchronous server event handlers.
+
+use std::{borrow::Cow, collections::BTreeMap};
+
+use crate::NativeBlock;
+
+/// Reject a query when the server does not recognize the setting.
+pub const IMPORTANT: u64 = 0x01;
+/// Identify a custom setting supplied by the application.
+pub const CUSTOM: u64 = 0x02;
+/// Mark a setting as obsolete in the server setting protocol.
+pub const OBSOLETE: u64 = 0x04;
+
+/// A per-query setting with the upstream Native protocol flags.
+#[derive(Debug, PartialEq, Eq)]
+pub struct QuerySettingsField<'a> {
+    /// Serialized setting value; literals remain borrowed.
+    pub value: Cow<'a, str>,
+    /// Bitwise combination of [`IMPORTANT`], [`CUSTOM`], and [`OBSOLETE`].
+    pub flags: u64,
+}
+
+/// Settings are serialized in a deterministic key order.
+pub type QuerySettings<'a> = BTreeMap<Cow<'a, str>, QuerySettingsField<'a>>;
+/// `None` is a NULL parameter, distinct from an empty string.
+pub type QueryParams<'a> = BTreeMap<Cow<'a, str>, Option<Cow<'a, str>>>;
+/// Caller-supplied identity sent without generating or replacing a value.
+pub type QueryId<'a> = Cow<'a, str>;
+
+/// OpenTelemetry context attached to a Native query.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TracingContext<'a> {
+    /// Complete 128-bit trace identifier, preserving leading zero bits.
+    pub trace_id: u128,
+    /// Parent span identifier.
+    pub span_id: u64,
+    /// W3C tracestate text.
+    pub tracestate: Cow<'a, str>,
+    /// W3C trace flags, including the sampled bit.
+    pub trace_flags: u8,
+}
+
+/// Server progress deltas; these values are not client-side estimates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    /// Rows read in this progress event.
+    pub rows: u64,
+    /// Bytes read in this progress event.
+    pub bytes: u64,
+    /// Server estimate of total input rows.
+    pub total_rows: u64,
+    /// Rows written in this event.
+    pub written_rows: u64,
+    /// Bytes written in this event.
+    pub written_bytes: u64,
+}
+
+/// Query profile reported by the server.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    /// Result rows.
+    pub rows: u64,
+    /// Result blocks.
+    pub blocks: u64,
+    /// Result bytes.
+    pub bytes: u64,
+    /// Rows before the server applied a limit.
+    pub rows_before_limit: u64,
+    /// Whether the server applied a limit.
+    pub applied_limit: bool,
+    /// Whether rows before limit were calculated.
+    pub calculated_rows_before_limit: bool,
+}
+
+/// An exception packet retaining the server's diagnostic fields.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ServerException {
+    /// ClickHouse error code.
+    pub code: i32,
+    /// Server exception type.
+    pub name: String,
+    /// Human-readable diagnostic supplied by the server.
+    pub display_text: String,
+    /// Stack trace supplied by the server, possibly empty.
+    pub stack_trace: String,
+}
+
+/// Native block compression configured when a client is created.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionMethod {
+    /// Send uncompressed Native blocks.
+    #[default]
+    None,
+    /// Compress blocks with LZ4.
+    Lz4,
+    /// Compress blocks with Zstandard.
+    Zstd,
+}
+
+/// Information obtained during the server handshake.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ServerInfo {
+    /// Server product name.
+    pub name: String,
+    /// Server timezone identifier.
+    pub timezone: String,
+    /// Server display name.
+    pub display_name: String,
+    /// Server major version.
+    pub version_major: u64,
+    /// Server minor version.
+    pub version_minor: u64,
+    /// Server patch version.
+    pub version_patch: u64,
+    /// Negotiated server protocol revision.
+    pub revision: u64,
+}
+
+/// An in-memory named table borrowed for one query execution.
+pub struct ExternalTable<'a> {
+    /// Name referenced by SQL; it is not interpolated into the SQL text.
+    pub name: Cow<'a, str>,
+    /// Data whose columns define the external table schema.
+    pub data: &'a NativeBlock,
+}
+
+type ValueHandler<'a, T> = Box<dyn FnMut(T) + 'a>;
+type BlockHandler<'a> = Box<dyn FnMut(&NativeBlock) + 'a>;
+type ExceptionHandler<'a> = Box<dyn FnMut(&ServerException) + 'a>;
+
+/// A synchronous request retaining borrowed text and scoped callbacks.
+///
+/// Callbacks run on the thread advancing the query. Callback panics are contained
+/// and returned as `Error::CallbackPanicked`; no panic unwinds across C++.
+pub struct Query<'a> {
+    /// SQL sent as supplied, without statement interpolation.
+    pub sql: Cow<'a, str>,
+    /// Caller-supplied query identity.
+    pub query_id: QueryId<'a>,
+    /// Per-query settings.
+    pub settings: QuerySettings<'a>,
+    /// Typed placeholders resolved by the server.
+    pub params: QueryParams<'a>,
+    /// Optional distributed tracing context.
+    pub tracing_context: Option<TracingContext<'a>>,
+    pub(crate) on_progress: Option<ValueHandler<'a, Progress>>,
+    pub(crate) on_profile: Option<ValueHandler<'a, Profile>>,
+    pub(crate) on_profile_events: Option<BlockHandler<'a>>,
+    pub(crate) on_server_log: Option<BlockHandler<'a>>,
+    pub(crate) on_exception: Option<ExceptionHandler<'a>>,
+}
+
+impl<'a> Query<'a> {
+    /// Narrow the borrowing interval to one synchronous operation.
+    pub(crate) fn shorten<'b>(self) -> Query<'b>
+    where
+        'a: 'b,
+    {
+        self
+    }
+
+    /// Create a query; string literals and borrowed SQL do not allocate.
+    pub fn new(sql: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            sql: sql.into(),
+            query_id: Cow::Borrowed(""),
+            settings: BTreeMap::new(),
+            params: BTreeMap::new(),
+            tracing_context: None,
+            on_progress: None,
+            on_profile: None,
+            on_profile_events: None,
+            on_server_log: None,
+            on_exception: None,
+        }
+    }
+
+    /// Attach a caller-supplied query identity.
+    pub fn with_id(mut self, id: impl Into<Cow<'a, str>>) -> Self {
+        self.query_id = id.into();
+        self
+    }
+
+    /// Insert or replace one flagged setting.
+    pub fn with_setting(
+        mut self,
+        name: impl Into<Cow<'a, str>>,
+        value: impl Into<Cow<'a, str>>,
+        flags: u64,
+    ) -> Self {
+        self.settings.insert(
+            name.into(),
+            QuerySettingsField {
+                value: value.into(),
+                flags,
+            },
+        );
+        self
+    }
+
+    /// Bind a value to a server-side typed placeholder.
+    pub fn with_param(
+        mut self,
+        name: impl Into<Cow<'a, str>>,
+        value: impl Into<Cow<'a, str>>,
+    ) -> Self {
+        self.params.insert(name.into(), Some(value.into()));
+        self
+    }
+
+    /// Bind a NULL value without conflating it with an empty string.
+    pub fn with_null_param(mut self, name: impl Into<Cow<'a, str>>) -> Self {
+        self.params.insert(name.into(), None);
+        self
+    }
+
+    /// Attach the complete tracing context.
+    pub fn with_tracing(mut self, context: TracingContext<'a>) -> Self {
+        self.tracing_context = Some(context);
+        self
+    }
+
+    /// Receive server progress while the caller advances the query.
+    pub fn on_progress(mut self, callback: impl FnMut(Progress) + 'a) -> Self {
+        self.on_progress = Some(Box::new(callback));
+        self
+    }
+
+    /// Receive the server's result profile.
+    pub fn on_profile(mut self, callback: impl FnMut(Profile) + 'a) -> Self {
+        self.on_profile = Some(Box::new(callback));
+        self
+    }
+
+    /// Receive profile event tables without projecting or copying their columns.
+    pub fn on_profile_events(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
+        self.on_profile_events = Some(Box::new(callback));
+        self
+    }
+
+    /// Receive structured server log tables.
+    pub fn on_server_log(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
+        self.on_server_log = Some(Box::new(callback));
+        self
+    }
+
+    /// Observe a server exception before it is returned as an error.
+    pub fn on_exception(mut self, callback: impl FnMut(&ServerException) + 'a) -> Self {
+        self.on_exception = Some(Box::new(callback));
+        self
+    }
+
+    /// Whether this query requires server event handlers.
+    pub fn has_event_callbacks(&self) -> bool {
+        self.on_progress.is_some()
+            || self.on_profile.is_some()
+            || self.on_profile_events.is_some()
+            || self.on_server_log.is_some()
+            || self.on_exception.is_some()
+    }
+}
+
+impl<'a> From<&'a str> for Query<'a> {
+    fn from(sql: &'a str) -> Self {
+        Self::new(sql)
+    }
+}
+
+impl From<String> for Query<'_> {
+    fn from(sql: String) -> Self {
+        Self::new(sql)
+    }
+}

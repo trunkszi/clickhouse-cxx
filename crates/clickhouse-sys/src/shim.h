@@ -11,18 +11,55 @@
 
 namespace chcxx {
 
+struct EventFields;
+struct ExceptionFields;
+struct ServerInfo;
+struct Version;
+
+struct NativeEvent {
+    // Data=0, progress=1, profile=2, profile events=3, log=4, exception=5.
+    std::uint8_t kind = 0;
+    clickhouse::Progress progress;
+    clickhouse::Profile profile;
+    clickhouse::Exception exception;
+    clickhouse::Block block;
+};
+using EventCallback = rust::Fn<bool(std::uint8_t*, const NativeEvent&)>;
+
 /// Owning wrapper around a synchronous clickhouse-cpp client.
 class Client {
 public:
     Client(rust::Str host, uint16_t port, rust::Str user, rust::Str password, rust::Str database);
+    Client(rust::Str host, uint16_t port, rust::Str user, rust::Str password, rust::Str database,
+           std::uint8_t compression, std::uint64_t timeout_ms);
 
     explicit Client(std::unique_ptr<clickhouse::Client> client);
 
     clickhouse::Client& inner();
     const clickhouse::Client& inner() const;
 
+    std::uint8_t* context = nullptr;
+    const EventCallback* callback = nullptr;
+    clickhouse::ExternalTables external;
+    bool emit(const NativeEvent& event);
+
 private:
     std::unique_ptr<clickhouse::Client> inner_;
+};
+
+/// A sink that exists only during one synchronous FFI call, including unwinding.
+struct EventScope {
+    Client& client;
+    EventScope(Client& client, std::uint8_t* context, const EventCallback& callback);
+    ~EventScope();
+    EventScope(const EventScope&) = delete;
+    EventScope& operator=(const EventScope&) = delete;
+};
+
+/// Owning wrapper around a clickhouse-cpp query.
+struct NativeQuery {
+    clickhouse::Query value;
+    explicit NativeQuery(rust::Str sql, rust::Str id);
 };
 
 /// Owning wrapper around a clickhouse-cpp block.
@@ -86,5 +123,39 @@ uint32_t block_column_kind(const Block& block, size_t index);
 rust::Slice<const uint8_t> block_column_bytes(const Block& block, size_t index);
 rust::Vec<rust::String> block_column_strings(const Block& block, size_t index);
 size_t block_column_capacity(const Block& block, size_t index);
+rust::String block_column_type(const Block& block, size_t index);
+
+std::unique_ptr<Client> new_client_options(rust::Str host, uint16_t port, rust::Str user,
+                                           rust::Str password, rust::Str database,
+                                           uint8_t compression, uint64_t timeout_ms);
+void reset(Client& client);
+
+std::unique_ptr<NativeQuery> new_query(rust::Str sql, rust::Str id);
+void set_setting(NativeQuery& query, rust::Str key, rust::Str value, uint64_t flags);
+void set_param(NativeQuery& query, rust::Str key, rust::Str value, bool is_null);
+void set_tracing(NativeQuery& query, uint64_t high, uint64_t low, uint64_t span,
+                 rust::Str state, uint8_t flags);
+void install_events(Client& client, NativeQuery& query, uint8_t mask);
+
+void begin_select(Client& client, NativeQuery& query, uint8_t mask, uint8_t* context,
+                  EventCallback callback);
+std::unique_ptr<Block> next_block(Client& client, uint8_t* context, EventCallback callback);
+void cancel(Client& client, uint8_t* context, EventCallback callback);
+bool is_selecting(const Client& client);
+std::unique_ptr<Block> begin_insert(Client& client, const NativeQuery& query);
+void send_insert_block(Client& client, const Block& block);
+void end_insert(Client& client);
+bool is_inserting(const Client& client);
+void add_external(Client& client, rust::Str name, const Block& block);
+void select_external(Client& client, NativeQuery& query, uint8_t mask, uint8_t* context,
+                     EventCallback callback);
+void clear_external(Client& client);
+ServerInfo get_server_info(const Client& client);
+Version get_version();
+
+std::uint8_t event_kind(const NativeEvent& event);
+EventFields event_fields(const NativeEvent& event);
+ExceptionFields event_exception(const NativeEvent& event);
+std::unique_ptr<Block> event_block(const NativeEvent& event);
 
 }  // namespace chcxx

@@ -1,8 +1,13 @@
-//! Structured schema, transport, and borrowed projection errors.
+//! Structured configuration, transport, schema, and session lifecycle errors.
 
 use std::borrow::Cow;
 
-/// A rejected configuration, schema, transport, or checked projection.
+use crate::query::ServerException;
+
+/// A synchronous SDK operation result.
+pub type Result<T, E = Error> = core::result::Result<T, E>;
+
+/// A failed operation never leaves an unknown session available for reuse.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The endpoint text could not be parsed.
@@ -19,7 +24,7 @@ pub enum Error {
         /// Scheme without the `://` separator.
         scheme: Cow<'static, str>,
     },
-    /// The native client rejected or failed the operation.
+    /// `clickhouse-cpp` rejected or failed the operation.
     #[error("native transport failure: {message}")]
     Native {
         /// Diagnostic text from the bridge.
@@ -69,6 +74,38 @@ pub enum Error {
         /// Number of rows in the projection.
         row_count: usize,
     },
+    /// A request or endpoint violates a documented contract.
+    #[error("invalid request: {0}")]
+    Invalid(Cow<'static, str>),
+    /// The server returned its structured exception packet.
+    #[error("server exception {0:?}")]
+    Server(ServerException),
+    /// Upstream interactive inserts do not accept query event handlers.
+    #[error("interactive inserts do not support query event callbacks")]
+    InsertEventCallbacks,
+    /// A contained callback panic interrupted the operation.
+    #[error("query callback panicked; session cleanup was requested")]
+    CallbackPanicked,
+    /// An explicit reset is required before another request may run.
+    #[error("connection is unusable after cleanup failure; reset it explicitly")]
+    ConnectionPoisoned,
+    /// Drop cleanup failed; retrieve the error before submitting another query.
+    #[error("previous session cleanup failed; call take_cleanup_error")]
+    PendingCleanup,
+    /// Both the original cleanup and the recovery attempt failed.
+    #[error("session cleanup failed: {operation}; recovery failed: {recovery}")]
+    Cleanup {
+        /// Original cancellation or reset failure.
+        operation: Box<Error>,
+        /// Subsequent recovery failure.
+        recovery: Box<Error>,
+    },
+    /// Every worker slot is already leased by another live thread.
+    #[error("all {workers} worker slots are leased by other live threads")]
+    WorkerSlotsExhausted {
+        /// Configured number of worker slots.
+        workers: usize,
+    },
     /// A serde value could not be encoded as RowBinary or a block column.
     #[error("serde bridge failure: {message}")]
     Serde {
@@ -107,8 +144,13 @@ impl Error {
     }
 }
 
-/// A synchronous SDK operation result.
-pub type Result<T, E = Error> = core::result::Result<T, E>;
+impl From<cxx::Exception> for Error {
+    fn from(error: cxx::Exception) -> Self {
+        Self::Native {
+            message: Cow::Owned(String::from(error.what())),
+        }
+    }
+}
 
 /// Construct a schema error without allocating for static diagnostics.
 pub(crate) fn schema(reason: impl Into<Cow<'static, str>>) -> Error {
