@@ -1,6 +1,22 @@
-//! Owned aligned column storage for checked zero-copy projections.
+//! Column storage: owned aligned buffers and the native column family.
+
+mod composite;
+mod fixed;
+mod variable;
+mod wire;
+
 use std::borrow::Cow;
 
+pub use composite::{
+    ArrayColumn, Decimal256Column, GeoColumn, GeoKind, LowCardinalityColumn, MapColumn,
+    NothingColumn, NullableColumn, TupleColumn,
+};
+pub use fixed::{
+    ChBool, Date, Date32, DateTime, DateTime64, Decimal32, Decimal64, Decimal128, Enum8, Enum16,
+    FixedKind, FixedType, FixedWireColumn, Ipv4, Ipv6, Time, Time64, Uuid, decimal_kind,
+};
+pub use variable::{FixedStringColumn, StringColumn};
+pub use wire::{TypeCode, WireColumn};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 use crate::{BufferPolicy, MemoryBuffer, Result, buffer_policy::Retention, error::schema};

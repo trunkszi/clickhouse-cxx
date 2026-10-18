@@ -1,13 +1,13 @@
-//! Errors returned by the C++ column and block wrappers.
+//! Errors returned by the native wire column and block wrappers.
 
 use std::borrow::Cow;
 
-/// Errors from the native `clickhouse-cpp` column matrix.
+/// Errors from the native column matrix.
 #[derive(Debug, thiserror::Error)]
-pub enum CppError {
+pub enum WireError {
     /// An error raised by the C++ bridge.
-    #[error("clickhouse-cpp error: {0}")]
-    Cpp(String),
+    #[error("native bridge error: {0}")]
+    Native(String),
     /// A column name was not found in the block.
     #[error("unknown column: {0}")]
     UnknownColumn(String),
@@ -48,11 +48,11 @@ pub enum CppError {
     },
 }
 
-impl From<cxx::Exception> for CppError {
+impl From<cxx::Exception> for WireError {
     fn from(error: cxx::Exception) -> Self {
-        Self::Cpp(error.what().to_owned())
+        Self::Native(error.what().to_owned())
     }
 }
 
 /// Result alias for the native column matrix.
-pub type CppResult<T> = std::result::Result<T, CppError>;
+pub type WireResult<T> = std::result::Result<T, WireError>;

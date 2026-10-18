@@ -8,10 +8,10 @@ use std::{
 };
 
 use clickhouse::{
-    ArrayColumn, ChBool, CppBlock, CppColumn, Date, Date32, DateTime, DateTime64, Decimal32,
-    Decimal64, Decimal128, Enum8, Enum16, FixedKind, FixedStringColumn, GeoColumn, GeoKind, Ipv4,
-    Ipv6, LowCardinalityColumn, MapColumn, NativeClient, NullableColumn, StringColumn, Time,
-    Time64, TupleColumn, Uuid,
+    ArrayColumn, ChBool, Date, Date32, DateTime, DateTime64, Decimal32, Decimal64, Decimal128,
+    Enum8, Enum16, FixedKind, FixedStringColumn, GeoColumn, GeoKind, Ipv4, Ipv6,
+    LowCardinalityColumn, MapColumn, NativeClient, NullableColumn, StringColumn, Time, Time64,
+    TupleColumn, Uuid, WireBlock, WireColumn,
 };
 use zerocopy::FromBytes;
 
@@ -119,12 +119,15 @@ fn native_round_trip_primitives() {
         .execute("CREATE TABLE t02_simple (id UInt32, name String) ENGINE = Memory")
         .expect("create");
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block
-        .append("id", CppColumn::fixed(&[1_u32, 2]).expect("id"))
+        .append("id", WireColumn::fixed(&[1_u32, 2]).expect("id"))
         .expect("append id");
     block
-        .append("name", CppColumn::strings(["alpha", "beta"]).expect("name"))
+        .append(
+            "name",
+            WireColumn::strings(["alpha", "beta"]).expect("name"),
+        )
         .expect("append name");
     client.insert("t02_simple", &block).expect("insert");
 
@@ -179,111 +182,127 @@ fn native_round_trip_full_type_matrix() {
         )
         .expect("create");
 
-    let mut block = CppBlock::new().expect("block");
-    let fixed = |name: &str, column: CppColumn, block: &mut CppBlock| {
+    let mut block = WireBlock::new().expect("block");
+    let fixed = |name: &str, column: WireColumn, block: &mut WireBlock| {
         block.append(name, column).expect(name);
     };
-    fixed("u8", CppColumn::fixed(&[1_u8]).expect("u8"), &mut block);
-    fixed("u16", CppColumn::fixed(&[2_u16]).expect("u16"), &mut block);
-    fixed("u32", CppColumn::fixed(&[3_u32]).expect("u32"), &mut block);
-    fixed("u64", CppColumn::fixed(&[4_u64]).expect("u64"), &mut block);
+    fixed("u8", WireColumn::fixed(&[1_u8]).expect("u8"), &mut block);
+    fixed("u16", WireColumn::fixed(&[2_u16]).expect("u16"), &mut block);
+    fixed("u32", WireColumn::fixed(&[3_u32]).expect("u32"), &mut block);
+    fixed("u64", WireColumn::fixed(&[4_u64]).expect("u64"), &mut block);
     fixed(
         "u128",
-        CppColumn::fixed(&[5_u128]).expect("u128"),
+        WireColumn::fixed(&[5_u128]).expect("u128"),
         &mut block,
     );
-    fixed("i8", CppColumn::fixed(&[-1_i8]).expect("i8"), &mut block);
-    fixed("i16", CppColumn::fixed(&[-2_i16]).expect("i16"), &mut block);
-    fixed("i32", CppColumn::fixed(&[-3_i32]).expect("i32"), &mut block);
-    fixed("i64", CppColumn::fixed(&[-4_i64]).expect("i64"), &mut block);
+    fixed("i8", WireColumn::fixed(&[-1_i8]).expect("i8"), &mut block);
+    fixed(
+        "i16",
+        WireColumn::fixed(&[-2_i16]).expect("i16"),
+        &mut block,
+    );
+    fixed(
+        "i32",
+        WireColumn::fixed(&[-3_i32]).expect("i32"),
+        &mut block,
+    );
+    fixed(
+        "i64",
+        WireColumn::fixed(&[-4_i64]).expect("i64"),
+        &mut block,
+    );
     fixed(
         "i128",
-        CppColumn::fixed(&[-5_i128]).expect("i128"),
+        WireColumn::fixed(&[-5_i128]).expect("i128"),
         &mut block,
     );
     fixed(
         "f32",
-        CppColumn::fixed(&[1.5_f32]).expect("f32"),
+        WireColumn::fixed(&[1.5_f32]).expect("f32"),
         &mut block,
     );
     fixed(
         "f64",
-        CppColumn::fixed(&[-2.5_f64]).expect("f64"),
+        WireColumn::fixed(&[-2.5_f64]).expect("f64"),
         &mut block,
     );
     fixed(
         "b",
-        CppColumn::fixed(&[ChBool(1)]).expect("bool"),
+        WireColumn::fixed(&[ChBool(1)]).expect("bool"),
         &mut block,
     );
-    fixed("d", CppColumn::fixed(&[Date(1)]).expect("date"), &mut block);
+    fixed(
+        "d",
+        WireColumn::fixed(&[Date(1)]).expect("date"),
+        &mut block,
+    );
     fixed(
         "d32",
-        CppColumn::fixed(&[Date32(-1)]).expect("date32"),
+        WireColumn::fixed(&[Date32(-1)]).expect("date32"),
         &mut block,
     );
     fixed(
         "dt",
-        CppColumn::fixed(&[DateTime(1)]).expect("datetime"),
+        WireColumn::fixed(&[DateTime(1)]).expect("datetime"),
         &mut block,
     );
     fixed(
         "dt64",
-        CppColumn::fixed(&[DateTime64(1_000)]).expect("datetime64"),
+        WireColumn::fixed(&[DateTime64(1_000)]).expect("datetime64"),
         &mut block,
     );
     fixed(
         "tm",
-        CppColumn::fixed(&[Time(1)]).expect("time"),
+        WireColumn::fixed(&[Time(1)]).expect("time"),
         &mut block,
     );
     fixed(
         "tm64",
-        CppColumn::fixed(&[Time64(1_000)]).expect("time64"),
+        WireColumn::fixed(&[Time64(1_000)]).expect("time64"),
         &mut block,
     );
     fixed(
         "dec32",
-        CppColumn::fixed(&[Decimal32(123)]).expect("decimal32"),
+        WireColumn::fixed(&[Decimal32(123)]).expect("decimal32"),
         &mut block,
     );
     fixed(
         "dec64",
-        CppColumn::fixed(&[Decimal64(1_234)]).expect("decimal64"),
+        WireColumn::fixed(&[Decimal64(1_234)]).expect("decimal64"),
         &mut block,
     );
     fixed(
         "dec128",
-        CppColumn::fixed(&[Decimal128(123_456)]).expect("decimal128"),
+        WireColumn::fixed(&[Decimal128(123_456)]).expect("decimal128"),
         &mut block,
     );
     fixed(
         "uuid",
-        CppColumn::fixed(&[Uuid([1; 16])]).expect("uuid"),
+        WireColumn::fixed(&[Uuid([1; 16])]).expect("uuid"),
         &mut block,
     );
     fixed(
         "ip4",
-        CppColumn::fixed(&[Ipv4(1)]).expect("ipv4"),
+        WireColumn::fixed(&[Ipv4(1)]).expect("ipv4"),
         &mut block,
     );
     fixed(
         "ip6",
-        CppColumn::fixed(&[Ipv6([1; 16])]).expect("ipv6"),
+        WireColumn::fixed(&[Ipv6([1; 16])]).expect("ipv6"),
         &mut block,
     );
     let mut fs = FixedStringColumn::new(4).expect("fixed string");
     fs.append(b"ab").expect("fixed string value");
-    block.append("fs", CppColumn::FixedString(fs)).expect("fs");
+    block.append("fs", WireColumn::FixedString(fs)).expect("fs");
     fixed(
         "e8",
-        CppColumn::fixed_named(FixedKind::Enum8, "Enum8('a' = 1, 'b' = 2)", &[Enum8(1)])
+        WireColumn::fixed_named(FixedKind::Enum8, "Enum8('a' = 1, 'b' = 2)", &[Enum8(1)])
             .expect("enum8"),
         &mut block,
     );
     fixed(
         "e16",
-        CppColumn::fixed_named(
+        WireColumn::fixed_named(
             FixedKind::Enum16,
             "Enum16('a' = 100, 'b' = 200)",
             &[Enum16(100)],
@@ -292,44 +311,44 @@ fn native_round_trip_full_type_matrix() {
         &mut block,
     );
     block
-        .append("s", CppColumn::strings(["hello"]).expect("string"))
+        .append("s", WireColumn::strings(["hello"]).expect("string"))
         .expect("s");
     let mut json = StringColumn::new_json().expect("json");
     json.append_str("{\"a\":1}").expect("json value");
-    block.append("js", CppColumn::Json(json)).expect("js");
-    let inner = CppColumn::fixed(&[0_u32]).expect("nullable inner");
+    block.append("js", WireColumn::Json(json)).expect("js");
+    let inner = WireColumn::fixed(&[0_u32]).expect("nullable inner");
     let mut nullable = NullableColumn::new(&inner).expect("nullable");
     nullable.append_fixed(&[42_u32]).expect("nullable value");
     block
-        .append("n", CppColumn::Nullable(Box::new(nullable)))
+        .append("n", WireColumn::Nullable(Box::new(nullable)))
         .expect("n");
     let mut array = ArrayColumn::new("UInt32").expect("array");
-    let values = CppColumn::fixed(&[1_u32, 2]).expect("array values");
+    let values = WireColumn::fixed(&[1_u32, 2]).expect("array values");
     array.append_row(&values).expect("array row");
     block
-        .append("arr", CppColumn::Array(Box::new(array)))
+        .append("arr", WireColumn::Array(Box::new(array)))
         .expect("arr");
     let mut low_cardinality = LowCardinalityColumn::new("String").expect("low cardinality");
     low_cardinality
         .append_str("x")
         .expect("low cardinality value");
     block
-        .append("lc", CppColumn::LowCardinality(Box::new(low_cardinality)))
+        .append("lc", WireColumn::LowCardinality(Box::new(low_cardinality)))
         .expect("lc");
     let mut tuple = TupleColumn::new(&["UInt32", "String"]).expect("tuple");
     tuple
         .append_fixed(0, &7_u32.to_le_bytes())
         .expect("tuple fixed");
     tuple.append_str(1, "t").expect("tuple string");
-    block.append("tup", CppColumn::Tuple(tuple)).expect("tup");
+    block.append("tup", WireColumn::Tuple(tuple)).expect("tup");
     let mut map = MapColumn::new("String", "UInt64").expect("map");
-    let keys = CppColumn::strings(["k"]).expect("map keys");
-    let values = CppColumn::fixed(&[9_u64]).expect("map values");
+    let keys = WireColumn::strings(["k"]).expect("map keys");
+    let values = WireColumn::fixed(&[9_u64]).expect("map values");
     map.append_row(&keys, &values).expect("map row");
-    block.append("m", CppColumn::Map(map)).expect("m");
+    block.append("m", WireColumn::Map(map)).expect("m");
     let mut point = GeoColumn::new(GeoKind::Point).expect("point");
     point.append_point(1.5, 2.5).expect("point value");
-    block.append("pt", CppColumn::Geo(point)).expect("pt");
+    block.append("pt", WireColumn::Geo(point)).expect("pt");
 
     client.insert("t02_all_types", &block).expect("insert");
     let selected = client
@@ -479,15 +498,15 @@ fn native_round_trip_geo_and_low_cardinality_numeric() {
     point
         .append_fixed(1, &2.0_f64.to_le_bytes())
         .expect("point y");
-    let point = CppColumn::Tuple(point);
+    let point = WireColumn::Tuple(point);
 
     let mut ring = ArrayColumn::new("Tuple(Float64, Float64)").expect("ring");
     ring.append_row(&point).expect("ring row");
-    let ring_column = CppColumn::Array(Box::new(ring));
+    let ring_column = WireColumn::Array(Box::new(ring));
 
     let mut polygon = ArrayColumn::new("Array(Tuple(Float64, Float64))").expect("polygon");
     polygon.append_row(&ring_column).expect("polygon row");
-    let polygon_column = CppColumn::Array(Box::new(polygon));
+    let polygon_column = WireColumn::Array(Box::new(polygon));
 
     let mut multi =
         ArrayColumn::new("Array(Array(Tuple(Float64, Float64)))").expect("multipolygon");
@@ -498,14 +517,14 @@ fn native_round_trip_geo_and_low_cardinality_numeric() {
         .append_u64(11)
         .expect("low cardinality value");
 
-    let mut block = CppBlock::new().expect("block");
+    let mut block = WireBlock::new().expect("block");
     block.append("ring", ring_column).expect("ring");
     block.append("poly", polygon_column).expect("poly");
     block
-        .append("mp", CppColumn::Array(Box::new(multi)))
+        .append("mp", WireColumn::Array(Box::new(multi)))
         .expect("mp");
     block
-        .append("lcu", CppColumn::LowCardinality(Box::new(low_cardinality)))
+        .append("lcu", WireColumn::LowCardinality(Box::new(low_cardinality)))
         .expect("lcu");
     client.insert("t02_geo", &block).expect("insert");
 

@@ -1,23 +1,15 @@
-//! Complete `clickhouse-cpp` column family model.
-
-mod composite;
-mod fixed;
-mod variable;
+//! Complete native column family model.
 
 use clickhouse_sys as sys;
-pub use composite::{
-    ArrayColumn, Decimal256Column, GeoColumn, GeoKind, LowCardinalityColumn, MapColumn,
-    NothingColumn, NullableColumn, TupleColumn,
-};
-pub use fixed::{
-    ChBool, CppFixedColumn, Date, Date32, DateTime, DateTime64, Decimal32, Decimal64, Decimal128,
-    Enum8, Enum16, FixedKind, FixedType, Ipv4, Ipv6, Time, Time64, Uuid, decimal_kind,
-};
-pub use variable::{FixedStringColumn, StringColumn};
 
-use crate::cpp_error::{CppError, CppResult};
+use super::{
+    ArrayColumn, Decimal256Column, FixedKind, FixedStringColumn, FixedType, FixedWireColumn,
+    GeoColumn, GeoKind, LowCardinalityColumn, MapColumn, NothingColumn, NullableColumn,
+    StringColumn, TupleColumn,
+};
+use crate::wire_error::{WireError, WireResult};
 
-/// ClickHouse type codes exposed by clickhouse-cpp.
+/// ClickHouse type codes exposed by the native wire layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum TypeCode {
@@ -106,12 +98,12 @@ pub enum TypeCode {
 }
 
 impl TypeCode {
-    /// Convert a raw clickhouse-cpp type code.
+    /// Convert a raw wire type code.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn from_i32(value: i32) -> CppResult<Self> {
+    pub fn from_i32(value: i32) -> WireResult<Self> {
         let code = match value {
             0 => Self::Void,
             1 => Self::Int8,
@@ -155,8 +147,8 @@ impl TypeCode {
             39 => Self::Json,
             40 => Self::Bool,
             other => {
-                return Err(CppError::Unsupported(format!(
-                    "unknown clickhouse-cpp type code {other}"
+                return Err(WireError::Unsupported(format!(
+                    "unknown wire type code {other}"
                 )));
             }
         };
@@ -165,9 +157,9 @@ impl TypeCode {
 }
 
 /// An owned column across all supported ClickHouse families.
-pub enum CppColumn {
+pub enum WireColumn {
     /// Fixed-width column.
-    Fixed(CppFixedColumn),
+    Fixed(FixedWireColumn),
     /// Variable-length String column.
     String(StringColumn),
     /// FixedString column.
@@ -192,14 +184,14 @@ pub enum CppColumn {
     Decimal256(Decimal256Column),
 }
 
-impl CppColumn {
+impl WireColumn {
     /// Construct a fixed-width column from a Rust slice.
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn fixed<T: FixedType>(values: &[T]) -> CppResult<Self> {
-        Ok(Self::Fixed(CppFixedColumn::from_slice(values)?))
+    pub fn fixed<T: FixedType>(values: &[T]) -> WireResult<Self> {
+        Ok(Self::Fixed(FixedWireColumn::from_slice(values)?))
     }
 
     /// Construct a fixed-width column from raw element bytes.
@@ -208,8 +200,8 @@ impl CppColumn {
     ///
     /// Returns an error if the type name is unsupported or the byte length is
     /// not a multiple of the element width.
-    pub fn fixed_bytes(kind: FixedKind, type_name: &str, bytes: &[u8]) -> CppResult<Self> {
-        Ok(Self::Fixed(CppFixedColumn::from_bytes(
+    pub fn fixed_bytes(kind: FixedKind, type_name: &str, bytes: &[u8]) -> WireResult<Self> {
+        Ok(Self::Fixed(FixedWireColumn::from_bytes(
             kind, type_name, bytes,
         )?))
     }
@@ -219,11 +211,11 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn append_default(&mut self) -> CppResult<()> {
+    pub fn append_default(&mut self) -> WireResult<()> {
         let handle = self
-            .cpp_handle()
-            .ok_or_else(|| CppError::Unsupported("column has no C++ handle".to_owned()))?;
-        handle.append_default().map_err(CppError::from)
+            .wire_handle()
+            .ok_or_else(|| WireError::Unsupported("column has no C++ handle".to_owned()))?;
+        handle.append_default().map_err(WireError::from)
     }
 
     /// Construct a fixed-width column with an explicit ClickHouse type name.
@@ -235,8 +227,8 @@ impl CppColumn {
         kind: FixedKind,
         type_name: &str,
         values: &[T],
-    ) -> CppResult<Self> {
-        Ok(Self::Fixed(CppFixedColumn::from_slice_named(
+    ) -> WireResult<Self> {
+        Ok(Self::Fixed(FixedWireColumn::from_slice_named(
             kind, type_name, values,
         )?))
     }
@@ -246,7 +238,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn string() -> CppResult<Self> {
+    pub fn string() -> WireResult<Self> {
         Ok(Self::String(StringColumn::new()?))
     }
 
@@ -255,7 +247,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn strings<'a, I>(values: I) -> CppResult<Self>
+    pub fn strings<'a, I>(values: I) -> WireResult<Self>
     where
         I: IntoIterator<Item = &'a str>,
     {
@@ -271,7 +263,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn json() -> CppResult<Self> {
+    pub fn json() -> WireResult<Self> {
         Ok(Self::Json(StringColumn::new_json()?))
     }
 
@@ -280,7 +272,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn fixed_string(width: usize) -> CppResult<Self> {
+    pub fn fixed_string(width: usize) -> WireResult<Self> {
         Ok(Self::FixedString(FixedStringColumn::new(width)?))
     }
 
@@ -289,7 +281,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn nullable(inner: &CppColumn) -> CppResult<Self> {
+    pub fn nullable(inner: &WireColumn) -> WireResult<Self> {
         Ok(Self::Nullable(Box::new(NullableColumn::new(inner)?)))
     }
 
@@ -298,7 +290,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn array(item_type: &str) -> CppResult<Self> {
+    pub fn array(item_type: &str) -> WireResult<Self> {
         Ok(Self::Array(Box::new(ArrayColumn::new(item_type)?)))
     }
 
@@ -307,7 +299,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn low_cardinality(inner_type: &str) -> CppResult<Self> {
+    pub fn low_cardinality(inner_type: &str) -> WireResult<Self> {
         Ok(Self::LowCardinality(Box::new(LowCardinalityColumn::new(
             inner_type,
         )?)))
@@ -318,7 +310,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn tuple(element_types: &[&str]) -> CppResult<Self> {
+    pub fn tuple(element_types: &[&str]) -> WireResult<Self> {
         Ok(Self::Tuple(TupleColumn::new(element_types)?))
     }
 
@@ -327,7 +319,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn map(key_type: &str, value_type: &str) -> CppResult<Self> {
+    pub fn map(key_type: &str, value_type: &str) -> WireResult<Self> {
         Ok(Self::Map(MapColumn::new(key_type, value_type)?))
     }
 
@@ -336,7 +328,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn geo(kind: GeoKind) -> CppResult<Self> {
+    pub fn geo(kind: GeoKind) -> WireResult<Self> {
         Ok(Self::Geo(GeoColumn::new(kind)?))
     }
 
@@ -345,7 +337,7 @@ impl CppColumn {
     /// # Errors
     ///
     /// Returns an error if the underlying operation fails.
-    pub fn nothing() -> CppResult<Self> {
+    pub fn nothing() -> WireResult<Self> {
         Ok(Self::Nothing(NothingColumn::new()?))
     }
 
@@ -395,7 +387,7 @@ impl CppColumn {
         self.len() == 0
     }
 
-    /// Reset the column while retaining capacity where clickhouse-cpp supports it.
+    /// Reset the column while retaining capacity where the native column supports it.
     pub fn clear(&mut self) {
         match self {
             Self::Fixed(column) => column.clear(),
@@ -413,19 +405,19 @@ impl CppColumn {
         }
     }
 
-    pub(crate) fn cpp_handle(&self) -> Option<&sys::ColumnHandle> {
+    pub(crate) fn wire_handle(&self) -> Option<&sys::ColumnHandle> {
         match self {
-            Self::Fixed(column) => column.cpp_handle().ok(),
-            Self::String(column) => Some(column.cpp_handle()),
-            Self::FixedString(column) => Some(column.cpp_handle()),
-            Self::Nullable(column) => Some(column.cpp_handle()),
-            Self::Array(column) => Some(column.cpp_handle()),
-            Self::LowCardinality(column) => Some(column.cpp_handle()),
-            Self::Tuple(column) => Some(column.cpp_handle()),
-            Self::Map(column) => Some(column.cpp_handle()),
-            Self::Geo(column) => Some(column.cpp_handle()),
-            Self::Json(column) => Some(column.cpp_handle()),
-            Self::Nothing(column) => Some(column.cpp_handle()),
+            Self::Fixed(column) => column.wire_handle().ok(),
+            Self::String(column) => Some(column.wire_handle()),
+            Self::FixedString(column) => Some(column.wire_handle()),
+            Self::Nullable(column) => Some(column.wire_handle()),
+            Self::Array(column) => Some(column.wire_handle()),
+            Self::LowCardinality(column) => Some(column.wire_handle()),
+            Self::Tuple(column) => Some(column.wire_handle()),
+            Self::Map(column) => Some(column.wire_handle()),
+            Self::Geo(column) => Some(column.wire_handle()),
+            Self::Json(column) => Some(column.wire_handle()),
+            Self::Nothing(column) => Some(column.wire_handle()),
             Self::Decimal256(_) => None,
         }
     }
