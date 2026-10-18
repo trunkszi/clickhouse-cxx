@@ -9,8 +9,8 @@ description = "Synchronous ClickHouse client with derived row batches and Native
 bench = false
 
 [dependencies]
-clickhouse-macros = { path = "../clickhouse-macros" }
-clickhouse-sys = { path = "../clickhouse-sys" }
+clickhouse-macros = { workspace = true }
+clickhouse-sys = { workspace = true }
 cxx = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -25,6 +25,9 @@ tracing = ["dep:tracing"]
 workspace = true
 
 [dev-dependencies]
+rcgen = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 criterion = { workspace = true }
 serde_bytes = { workspace = true }
 

@@ -8,6 +8,7 @@
 #[allow(clippy::missing_errors_doc)]
 #[cxx::bridge(namespace = "chcxx")]
 pub mod ffi {
+    // SAFETY: C++ owns each opaque handle; references and slices cannot outlive their call.
     unsafe extern "C++" {
         include!("shim.h");
 
@@ -29,6 +30,13 @@ pub mod ffi {
 
         /// Ping the server.
         fn ping(client: Pin<&mut Client>) -> Result<()>;
+
+        /// Reconnect by walking the configured endpoint list.
+        fn reset_connection_endpoint(client: Pin<&mut Client>) -> Result<()>;
+        /// Current connected endpoint host.
+        fn current_host(client: &Client) -> Result<String>;
+        /// Current connected endpoint port.
+        fn current_port(client: &Client) -> Result<u16>;
 
         /// Execute a statement such as a DDL query.
         fn execute(client: Pin<&mut Client>, sql: &str) -> Result<()>;
@@ -239,3 +247,8 @@ pub use ffi::{
     BlockHandle, ClientHandle, ColumnHandle, new_block_handle as new_block,
     new_column_client as new_client, new_column_handle as new_column,
 };
+
+mod bridge;
+mod session;
+pub use bridge::{EchoParams, NativeOptions, factory_echo, new_native_client};
+pub use session::{ConnectParams, TlsSession, connect};

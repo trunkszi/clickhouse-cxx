@@ -16,6 +16,8 @@ class Client {
 public:
     Client(rust::Str host, uint16_t port, rust::Str user, rust::Str password, rust::Str database);
 
+    explicit Client(std::unique_ptr<clickhouse::Client> client);
+
     clickhouse::Client& inner();
     const clickhouse::Client& inner() const;
 
@@ -46,6 +48,9 @@ std::unique_ptr<Client> new_client(rust::Str host, uint16_t port, rust::Str user
                                    rust::Str password, rust::Str database);
 
 void ping(Client& client);
+void reset_connection_endpoint(Client& client);
+rust::String current_host(const Client& client);
+uint16_t current_port(const Client& client);
 void execute(Client& client, rust::Str sql);
 void insert_block(Client& client, rust::Str table, const Block& block);
 std::unique_ptr<BlockList> query_blocks(Client& client, rust::Str sql);

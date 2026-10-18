@@ -10,11 +10,11 @@ use crate::{
 
 /// A synchronous Native TCP client over the native ClickHouse client library.
 ///
-/// The full transport, failover, and query-event surface is owned by the
-/// transport tickets. This type intentionally exposes only the operations the
-/// column type system needs for end-to-end verification.
+/// This thread-bound session reads and writes native column blocks directly.
+/// It cannot be sent to another thread or shared across threads.
 pub struct NativeClient {
     handle: UniquePtr<sys::ClientHandle>,
+    thread_bound: std::marker::PhantomData<*const ()>,
 }
 
 impl NativeClient {
@@ -26,6 +26,7 @@ impl NativeClient {
     pub fn connect(host: &str, port: u16) -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_client(host, port).map_err(WireError::from)?,
+            thread_bound: std::marker::PhantomData,
         })
     }
 

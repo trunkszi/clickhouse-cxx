@@ -6,11 +6,18 @@ license.workspace = true
 description = "Static clickhouse-cpp bridge for the clickhouse-cxx workspace"
 
 [dependencies]
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true }
+socket2 = { workspace = true }
 cxx = { workspace = true }
 
 [build-dependencies]
-cmake = { version = "0.1" }
+cmake = { workspace = true }
 cxx-build = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rcgen = { workspace = true }

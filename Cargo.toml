@@ -12,6 +12,15 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+clickhouse-sys = { path = "crates/clickhouse-sys" }
+clickhouse-macros = { path = "crates/clickhouse-macros" }
+cmake = { version = "0.1" }
+rcgen = { version = "0.13" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = { version = "0.8" }
+rustls-pemfile = { version = "2" }
+socket2 = { version = "0.5", features = ["all"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 cxx = { version = "1.0" }
 cxx-build = { version = "1.0" }
