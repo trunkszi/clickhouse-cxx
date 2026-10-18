@@ -2,6 +2,8 @@
 
 #[cfg(feature = "tcp")]
 mod composite;
+#[cfg(feature = "tcp")]
+mod composite_bytes;
 mod fixed;
 #[cfg(feature = "tcp")]
 mod variable;

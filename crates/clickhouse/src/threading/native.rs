@@ -590,29 +590,23 @@ fn reentrant_error() -> Error {
 
 impl Drop for ThreadLocalClient {
     fn drop(&mut self) {
-        match THREAD_CLIENTS.try_with(|cell| {
+        // TLS teardown already released the cached clients and their resources.
+        if let Ok(()) = THREAD_CLIENTS.try_with(|cell| {
             if let Ok(mut entries) = cell.try_borrow_mut() {
                 entries.remove(&self.id);
             }
-        }) {
-            Ok(()) => {}
-            // TLS teardown already released the cached clients and their resources.
-            Err(_) => {}
-        }
+        }) {}
     }
 }
 
 impl Drop for WorkerClient {
     fn drop(&mut self) {
-        match LOCAL_WORKERS.try_with(|cell| {
+        // TLS teardown already released each cached worker and its lease.
+        if let Ok(()) = LOCAL_WORKERS.try_with(|cell| {
             if let Ok(mut entries) = cell.try_borrow_mut() {
                 entries.remove(&self.id);
             }
-        }) {
-            Ok(()) => {}
-            // TLS teardown already released each cached worker and its lease.
-            Err(_) => {}
-        }
+        }) {}
     }
 }
 
