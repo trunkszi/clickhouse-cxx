@@ -45,7 +45,7 @@ The examples under `crates/clickhouse/examples/` form a progressive, runnable tu
 | :--- | :--- |
 | `01_quickstart_native_tcp` | Build a row-layer `Block` and a C++ `CppBlock`, inspect their schema, project `&[u64]` and `&[f64]` without copying, and optionally round-trip through the Native TCP `Client`. |
 | `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes (`table`, `rename_all`, `rename`, `bytes`), borrowed `Cow` fields, `Option`, `Vec`, and `BTreeMap`, plus the generated `Batch`, `BlockView`, and `Ref` types. |
-| `03_memory_policy_and_batch_reuse` | `.clear()` capacity retention, steady-state zero-allocation refills, burst trimming with `shrink_to_fit`, and a small `BufferPolicy` teaching model. |
+| `03_memory_policy_and_batch_reuse` | The real `clickhouse::BufferPolicy`: `default()`, `unbounded()`, `minimal()`, `allocated_bytes()`, policy-driven `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | The complete column-family tour: numeric, Bool, String/FixedString/JSON, date/time, decimals, UUID, IP, enums, Nullable, Array, LowCardinality, Tuple, Map, Geo, and Nothing. |
 | `05_dual_transport_and_row_client` | The typed `RowClient` surface (`insert_batch`, `insert_rows`, `query_rows`, `query_views`) over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map bridge columns. |
 

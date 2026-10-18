@@ -50,7 +50,7 @@ server; examples with a live section read `CLICKHOUSE_URL` (for example
 | :--- | :--- |
 | `01_quickstart_native_tcp` | `Block` and `CppBlock` construction, schema inspection, zero-copy fixed-width projections, optional `Client` round-trip. |
 | `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes, borrowed `Cow`/`Option`/`Vec`/`BTreeMap` fields, generated `Batch`, `BlockView`, and `Ref`. |
-| `03_memory_policy_and_batch_reuse` | `.clear()` capacity reuse, steady-state refills, burst trimming, and a `BufferPolicy` teaching model. |
+| `03_memory_policy_and_batch_reuse` | `clickhouse::BufferPolicy` (`default`, `unbounded`, `minimal`), aggregate `allocated_bytes()`, `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | All column families from numeric and Bool through Nullable, Array, Tuple, Map, Geo, JSON, and Nothing. |
 | `05_dual_transport_and_row_client` | `RowClient` over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map rows. |
 
