@@ -1,298 +1,226 @@
-//! Column-oriented blocks with zero-copy fixed-width projections.
+//! Column-oriented owned blocks with checked typed projections.
+use std::borrow::Cow;
 
-use cxx::UniquePtr;
-use zerocopy::{FromBytes, Immutable, KnownLayout};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::{error::Error, sys};
-
-const KIND_U8: u32 = 1;
-const KIND_U16: u32 = 2;
-const KIND_U32: u32 = 3;
-const KIND_U64: u32 = 4;
-const KIND_I8: u32 = 5;
-const KIND_I16: u32 = 6;
-const KIND_I32: u32 = 7;
-const KIND_I64: u32 = 8;
-const KIND_F32: u32 = 9;
-const KIND_F64: u32 = 10;
-
-/// A fixed-width primitive accepted by [`Block::column_slice`].
-pub trait FixedColumn: FromBytes + Immutable + KnownLayout {
-    /// Kind tag shared with the C++ bridge.
-    const KIND: u32;
-}
-
-macro_rules! fixed_column {
-    ($type:ty, $kind:expr) => {
-        impl FixedColumn for $type {
-            const KIND: u32 = $kind;
-        }
-    };
-}
-
-fixed_column!(u8, KIND_U8);
-fixed_column!(u16, KIND_U16);
-fixed_column!(u32, KIND_U32);
-fixed_column!(u64, KIND_U64);
-fixed_column!(i8, KIND_I8);
-fixed_column!(i16, KIND_I16);
-fixed_column!(i32, KIND_I32);
-fixed_column!(i64, KIND_I64);
-fixed_column!(f32, KIND_F32);
-fixed_column!(f64, KIND_F64);
-
-macro_rules! push_column {
-    ($block:ident, $ffi:ident, $type:ty, $name:ident, $values:ident) => {{
-        let values: &[$type] = $values;
-        if $block.rows != 0 && $block.rows != values.len() {
-            return Err(Error::block(format!(
-                "column `{}` has {} rows, expected {}",
-                $name,
-                values.len(),
-                $block.rows
-            )));
-        }
-        sys::ffi::$ffi($block.inner.pin_mut(), $name, values)
-            .map_err(|error| Error::block(format!("append column `{}`: {error}", $name)))?;
-        if $block.rows == 0 {
-            $block.rows = values.len();
-        }
-        Ok(())
-    }};
-}
-
-/// A column-oriented block owned by the native transport.
+use crate::{
+    Column, Error, Result,
+    column::{AlignedBytes, ColumnData, validate_offsets},
+    error::schema,
+};
+/// A collection of equally sized named columns.
+#[derive(Default)]
 pub struct Block {
-    inner: UniquePtr<sys::ffi::Block>,
+    columns: Vec<Column>,
     rows: usize,
 }
-
 impl Block {
-    /// Create an empty block.
     pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_capacity(cols: usize, _rows: usize) -> Self {
         Self {
-            inner: sys::ffi::block_new(),
+            columns: Vec::with_capacity(cols),
             rows: 0,
         }
     }
-
-    pub(crate) fn from_inner(inner: UniquePtr<sys::ffi::Block>) -> Self {
-        let rows = sys::ffi::block_rows(&inner);
-        Self { inner, rows }
-    }
-
-    pub(crate) fn inner(&self) -> &sys::ffi::Block {
-        &self.inner
-    }
-
-    /// Number of rows tracked by this builder.
-    pub fn rows(&self) -> usize {
+    pub fn row_count(&self) -> usize {
         self.rows
     }
-
-    /// Number of columns.
-    pub fn columns(&self) -> usize {
-        sys::ffi::block_columns(&self.inner)
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
     }
-
-    /// Name of a column by index.
-    pub fn column_name(&self, index: usize) -> String {
-        sys::ffi::block_column_name(&self.inner, index)
-    }
-
-    /// Append a `UInt8` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_u8(&mut self, name: &str, values: &[u8]) -> Result<(), Error> {
-        push_column!(self, block_append_u8, u8, name, values)
-    }
-
-    /// Append a `UInt16` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_u16(&mut self, name: &str, values: &[u16]) -> Result<(), Error> {
-        push_column!(self, block_append_u16, u16, name, values)
-    }
-
-    /// Append a `UInt32` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_u32(&mut self, name: &str, values: &[u32]) -> Result<(), Error> {
-        push_column!(self, block_append_u32, u32, name, values)
-    }
-
-    /// Append a `UInt64` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_u64(&mut self, name: &str, values: &[u64]) -> Result<(), Error> {
-        push_column!(self, block_append_u64, u64, name, values)
-    }
-
-    /// Append an `Int8` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_i8(&mut self, name: &str, values: &[i8]) -> Result<(), Error> {
-        push_column!(self, block_append_i8, i8, name, values)
-    }
-
-    /// Append an `Int16` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_i16(&mut self, name: &str, values: &[i16]) -> Result<(), Error> {
-        push_column!(self, block_append_i16, i16, name, values)
-    }
-
-    /// Append an `Int32` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_i32(&mut self, name: &str, values: &[i32]) -> Result<(), Error> {
-        push_column!(self, block_append_i32, i32, name, values)
-    }
-
-    /// Append an `Int64` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_i64(&mut self, name: &str, values: &[i64]) -> Result<(), Error> {
-        push_column!(self, block_append_i64, i64, name, values)
-    }
-
-    /// Append a `Float32` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_f32(&mut self, name: &str, values: &[f32]) -> Result<(), Error> {
-        push_column!(self, block_append_f32, f32, name, values)
-    }
-
-    /// Append a `Float64` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_f64(&mut self, name: &str, values: &[f64]) -> Result<(), Error> {
-        push_column!(self, block_append_f64, f64, name, values)
-    }
-
-    /// Append a `String` column.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the row count conflicts with an earlier
-    /// column or the native append fails.
-    pub fn push_string(&mut self, name: &str, values: &[String]) -> Result<(), Error> {
-        push_column!(self, block_append_string, String, name, values)
-    }
-
-    /// Drop all rows while keeping allocated column capacity.
     pub fn clear(&mut self) {
-        sys::ffi::block_clear(self.inner.pin_mut());
+        for c in &mut self.columns {
+            c.clear();
+        }
         self.rows = 0;
     }
-
-    /// Recompute the native row count before sending the block.
-    pub(crate) fn refresh(&mut self) -> Result<(), Error> {
-        sys::ffi::block_refresh(self.inner.pin_mut())
-            .map_err(|error| Error::block(format!("row refresh failed: {error}")))
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|c| c.name == name)
     }
-
-    /// Retained element capacity of a fixed-width column.
-    ///
+    /// Look up a column by its schema name.
     /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the column is missing or variable-length.
-    pub fn column_capacity(&self, name: &str) -> Result<usize, Error> {
-        let index = self.column_index(name)?;
-        Ok(sys::ffi::block_column_capacity(&self.inner, index))
+    /// An unknown name returns ColumnNotFound.
+    pub fn column_by_name(&self, name: &str) -> Result<&Column> {
+        self.column_index(name)
+            .map(|i| &self.columns[i])
+            .ok_or_else(|| Error::ColumnNotFound {
+                col_name: Cow::Owned(String::from(name)),
+            })
     }
-
-    /// Project a fixed-width column as a zero-copy slice.
-    ///
+    /// Look up a column by its index.
     /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the column is missing, its kind does not
-    /// match `T`, or the byte buffer is not a valid `T` slice.
-    pub fn column_slice<T: FixedColumn>(&self, name: &str) -> Result<&[T], Error> {
-        let index = self.column_index(name)?;
-        let kind = sys::ffi::block_column_kind(&self.inner, index);
-        if kind != T::KIND {
-            return Err(Error::block(format!(
-                "column `{name}` has kind {kind}, expected {}",
-                T::KIND
-            )));
-        }
-        let bytes = sys::ffi::block_column_bytes(&self.inner, index);
-        if bytes.is_empty() {
-            return Ok(&[]);
-        }
-        let address = bytes.as_ptr() as usize;
-        let required = std::mem::align_of::<T>();
-        if !address.is_multiple_of(required) {
-            return Err(Error::block(format!(
-                "column `{name}` data pointer 0x{address:x} is not {required}-byte aligned (kind \
-                 {kind}, bytes {})",
-                bytes.len()
-            )));
-        }
-        <[T]>::ref_from_bytes(bytes)
-            .map_err(|error| Error::block(format!("column `{name}` cast failed: {error:?}")))
+    /// An out-of-range index returns a schema error.
+    pub fn column(&self, idx: usize) -> Result<&Column> {
+        self.columns
+            .get(idx)
+            .ok_or_else(|| schema("column index out of bounds"))
     }
-
-    /// Materialize a `String` column.
-    ///
+    /// Borrow a fixed-width slice directly from a column.
     /// # Errors
-    ///
-    /// Returns [`Error::Block`] when the column is missing or is not a
-    /// `String` column.
-    pub fn column_strings(&self, name: &str) -> Result<Vec<String>, Error> {
-        let index = self.column_index(name)?;
-        let kind = sys::ffi::block_column_kind(&self.inner, index);
-        if kind != 11 {
-            return Err(Error::block(format!(
-                "column `{name}` is not a String column"
-            )));
-        }
-        Ok(sys::ffi::block_column_strings(&self.inner, index))
+    /// Missing columns, wrong storage, width, or alignment reject the projection.
+    pub fn column_slice<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        col_idx: usize,
+    ) -> Result<&[T]> {
+        let col = self.column(col_idx)?;
+        col.slice().map_err(|e| Error::ZeroCopyCast {
+            col_idx,
+            col_name: col.name.clone(),
+            reason: format!("{e}").into(),
+        })
     }
-
-    fn column_index(&self, name: &str) -> Result<usize, Error> {
-        for index in 0..self.columns() {
-            if self.column_name(index) == name {
-                return Ok(index);
-            }
-        }
-        Err(Error::block(format!("column `{name}` is missing")))
+    /// Borrow a fixed-width slice using the column name.
+    /// # Errors
+    /// A missing column or invalid cast returns an error.
+    pub fn column_slice_by_name<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        name: &str,
+    ) -> Result<&[T]> {
+        self.column_slice(
+            self.column_index(name)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    col_name: Cow::Owned(String::from(name)),
+                })?,
+        )
     }
-}
-
-impl Default for Block {
-    fn default() -> Self {
-        Self::new()
+    /// Borrow bytes of a string column row.
+    /// # Errors
+    /// Wrong column storage, offsets, or row index reject the read.
+    pub fn column_bytes(&self, col_idx: usize, row_idx: usize) -> Result<&[u8]> {
+        let c = self.column(col_idx)?;
+        let ColumnData::Strings { offsets, bytes } = &c.data else {
+            return Err(schema("expected string storage"));
+        };
+        validate_offsets(offsets, bytes.len())?;
+        let end = *offsets.get(row_idx).ok_or(Error::RowIndexOutOfBounds {
+            row_idx,
+            row_count: c.len(),
+        })? as usize;
+        let start = if row_idx == 0 {
+            0
+        } else {
+            offsets[row_idx - 1] as usize
+        };
+        bytes
+            .get(start..end)
+            .ok_or_else(|| schema("invalid string row bounds"))
+    }
+    /// Borrow a UTF-8 string row.
+    /// # Errors
+    /// Invalid string storage, bounds, or UTF-8 returns an error.
+    pub fn column_str(&self, col_idx: usize, row_idx: usize) -> Result<&str> {
+        std::str::from_utf8(self.column_bytes(col_idx, row_idx)?)
+            .map_err(|_| schema("invalid UTF-8 string"))
+    }
+    /// Append or refill one owned column; reject duplicate nonempty columns.
+    /// # Errors
+    /// Row-count or column-name mismatches reject the insertion.
+    pub fn append_column(&mut self, column: Column) -> Result<()> {
+        if self.rows != 0 && self.rows != column.len() {
+            return Err(schema("block column row count mismatch"));
+        }
+        if self.column_index(&column.name).is_some() {
+            return Err(schema("duplicate block column"));
+        }
+        if !self.columns.is_empty() && self.columns[0].len() != column.len() {
+            return Err(schema("block column row count mismatch"));
+        }
+        self.rows = column.len();
+        self.columns.push(column);
+        Ok(())
+    }
+    /// Copy a fixed-width column into aligned owned storage.
+    /// # Errors
+    /// Duplicate names or inconsistent row counts reject insertion.
+    pub fn append_fixed_slice<T: IntoBytes + Immutable>(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        type_name: &'static str,
+        values: &[T],
+    ) -> Result<()> {
+        self.append_column(Column {
+            name: name.into(),
+            type_name: type_name.into(),
+            rows: values.len(),
+            data: ColumnData::Fixed(AlignedBytes::from_bytes(values.as_bytes())),
+        })
+    }
+    /// Copy a flat string column after validating all offsets.
+    /// # Errors
+    /// Invalid offsets or a block schema mismatch reject insertion.
+    pub fn append_strings_flat(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        offsets: &[u64],
+        flat_bytes: &[u8],
+    ) -> Result<()> {
+        validate_offsets(offsets, flat_bytes.len())?;
+        self.append_column(Column {
+            name: name.into(),
+            type_name: "String".into(),
+            rows: offsets.len(),
+            data: ColumnData::Strings {
+                offsets: offsets.to_vec(),
+                bytes: flat_bytes.to_vec(),
+            },
+        })
+    }
+    /// Copy a flat primitive array column.
+    /// # Errors
+    /// Invalid offsets or inconsistent row counts reject insertion.
+    pub fn append_array_fixed_flat<T: IntoBytes + Immutable>(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        elem_type_name: &'static str,
+        offsets: &[u64],
+        flat_values: &[T],
+    ) -> Result<()> {
+        validate_offsets(offsets, flat_values.len())?;
+        let mut inner = Block::new();
+        inner.append_fixed_slice("values", elem_type_name, flat_values)?;
+        let values = inner
+            .columns
+            .pop()
+            .ok_or_else(|| schema("missing array values"))?;
+        self.append_column(Column {
+            name: name.into(),
+            type_name: format!("Array({elem_type_name})").into(),
+            rows: offsets.len(),
+            data: ColumnData::Array {
+                offsets: offsets.to_vec(),
+                values: Box::new(values),
+            },
+        })
+    }
+    /// Copy a nullable primitive column after validating its null map.
+    /// # Errors
+    /// Invalid null flags, lengths, or block schema reject insertion.
+    pub fn append_nullable_fixed<T: IntoBytes + Immutable>(
+        &mut self,
+        name: impl Into<Cow<'static, str>>,
+        inner_type_name: &'static str,
+        values: &[T],
+        null_map: &[u8],
+    ) -> Result<()> {
+        if values.len() != null_map.len() || null_map.iter().any(|v| *v > 1) {
+            return Err(schema("invalid nullable null map"));
+        }
+        let mut inner = Block::new();
+        inner.append_fixed_slice("values", inner_type_name, values)?;
+        let values = inner
+            .columns
+            .pop()
+            .ok_or_else(|| schema("missing nullable values"))?;
+        self.append_column(Column {
+            name: name.into(),
+            type_name: format!("Nullable({inner_type_name})").into(),
+            rows: null_map.len(),
+            data: ColumnData::Nullable {
+                null_map: null_map.to_vec(),
+                values: Box::new(values),
+            },
+        })
     }
 }

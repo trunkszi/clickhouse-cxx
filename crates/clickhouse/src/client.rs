@@ -2,7 +2,9 @@
 
 use cxx::UniquePtr;
 
-use crate::{block::Block, endpoint::Endpoint, error::Error, sys, telemetry::control_log};
+use crate::{
+    endpoint::Endpoint, error::Error, native_block::NativeBlock, sys, telemetry::control_log,
+};
 
 /// A synchronous client bound to one `tcp://` endpoint.
 pub struct Client {
@@ -65,7 +67,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`Error::Native`] when the server rejects the insert.
-    pub fn insert_block(&mut self, table: &str, block: &mut Block) -> Result<(), Error> {
+    pub fn insert_block(&mut self, table: &str, block: &mut NativeBlock) -> Result<(), Error> {
         control_log!("insert table={table} rows={}", block.rows());
         block.refresh()?;
         sys::ffi::insert_block(self.inner.pin_mut(), table, block.inner())
@@ -77,14 +79,16 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`Error::Native`] when the server rejects the query.
-    pub fn query_blocks(&mut self, sql: &str) -> Result<Vec<Block>, Error> {
+    pub fn query_blocks(&mut self, sql: &str) -> Result<Vec<NativeBlock>, Error> {
         control_log!("query statement_bytes={}", sql.len());
         let list = sys::ffi::query_blocks(self.inner.pin_mut(), sql)
             .map_err(|error| Error::native(format!("query failed: {error}")))?;
         let count = sys::ffi::block_list_len(&list);
         let mut blocks = Vec::with_capacity(count);
         for index in 0..count {
-            blocks.push(Block::from_inner(sys::ffi::block_list_get(&list, index)));
+            blocks.push(NativeBlock::from_inner(sys::ffi::block_list_get(
+                &list, index,
+            )));
         }
         Ok(blocks)
     }

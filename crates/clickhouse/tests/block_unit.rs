@@ -1,6 +1,6 @@
 //! In-memory endpoint, block, and projection checks.
 
-use clickhouse::{Block, Endpoint, Error, Scheme};
+use clickhouse::{Endpoint, Error, NativeBlock, Scheme};
 
 #[test]
 fn endpoint_parses_host_and_port() {
@@ -36,7 +36,7 @@ fn endpoint_rejects_bad_port_and_path() {
 
 #[test]
 fn block_round_trips_primitive_and_string_columns() {
-    let mut block = Block::new();
+    let mut block = NativeBlock::new();
     block.push_u64("id", &[1, 2, 3]).expect("push column");
     block.push_i64("delta", &[-2, 0, 2]).expect("push column");
     block
@@ -61,7 +61,7 @@ fn block_round_trips_primitive_and_string_columns() {
 
 #[test]
 fn block_clear_retains_capacity() {
-    let mut block = Block::new();
+    let mut block = NativeBlock::new();
     block.push_u64("id", &[0; 128]).expect("push column");
     let capacity = block.column_capacity("id").expect("capacity");
     assert!(capacity >= 128);
@@ -76,7 +76,7 @@ fn block_clear_retains_capacity() {
 
 #[test]
 fn block_reports_missing_and_mismatched_columns() {
-    let mut block = Block::new();
+    let mut block = NativeBlock::new();
     block.push_u64("id", &[1]).expect("push column");
     assert!(matches!(
         block.column_slice::<u64>("missing"),

@@ -3,10 +3,15 @@ name = "clickhouse-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Procedural macros for the clickhouse-cxx workspace"
-
 [lib]
 proc-macro = true
-
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+darling.workspace = true
+heck.workspace = true
+convert_case.workspace = true
+synstructure.workspace = true
 [lints]
 workspace = true

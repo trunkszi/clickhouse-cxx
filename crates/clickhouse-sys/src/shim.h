@@ -63,6 +63,11 @@ void block_append_i64(Block& block, rust::Str name, rust::Slice<const int64_t> v
 void block_append_f32(Block& block, rust::Str name, rust::Slice<const float> values);
 void block_append_f64(Block& block, rust::Str name, rust::Slice<const double> values);
 void block_append_string(Block& block, rust::Str name, rust::Slice<const rust::String> values);
+void block_append_string_flat(Block& block, rust::Str name,
+                              rust::Slice<const uint64_t> offsets,
+                              rust::Slice<const uint8_t> bytes);
+rust::Vec<uint64_t> block_column_string_offsets(const Block& block, size_t index);
+rust::Vec<uint8_t> block_column_string_flat(const Block& block, size_t index);
 
 void block_clear(Block& block);
 void block_refresh(Block& block);
