@@ -3,7 +3,7 @@ name = "clickhouse"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Synchronous ClickHouse Native TCP client over clickhouse-cpp"
+description = "Synchronous ClickHouse client with derived row batches and Native TCP transport"
 
 [dependencies]
 clickhouse-macros = { path = "../clickhouse-macros" }

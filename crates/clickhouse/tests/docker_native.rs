@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clickhouse::{Block, Client, Endpoint};
+use clickhouse::{Client, Endpoint, NativeBlock};
 
 const IMAGE: &str = "clickhouse/clickhouse-server:26.8.2.7";
 
@@ -118,7 +118,7 @@ fn native_tcp_tracer_bullet() {
         )
         .expect("create table");
 
-    let mut block = Block::new();
+    let mut block = NativeBlock::new();
     block.push_u64("id", &[1, 2, 3]).expect("push column");
     block.push_i64("delta", &[-5, 0, 5]).expect("push column");
     block

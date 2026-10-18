@@ -1,0 +1,40 @@
+# Derived synchronous rows
+
+`#[derive(Row)]` generates `EventBatch`, `EventBlockView<'a>`, and `EventRef<'a>`.
+`#[row(table = "events", rename_all = "camelCase")]` configures table metadata
+and column naming; a field can override its name with `#[row(column = "name")]`.
+`#[row(crate_path = "renamed_dependency")]` supports a renamed runtime dependency.
+
+Batches accept either `&Event` or `EventRef`. Strings, binary strings, arrays,
+nullable values, and maps append into flat reusable column buffers. An append
+copies borrowed values into owned batch storage without cloning the source row
+or allocating an owned string for each row. `clear()` retains all capacities.
+`to_block(&self)` materializes an independently owned block and therefore copies
+column buffers; it does not claim an allocation-free write pipeline.
+
+A checked block view exposes numeric columns as slices into block storage.
+String and array fields in `EventRef` borrow that storage. Maps expose an
+allocation-free entry iterator, and nullable fields preserve their null flags.
+Boolean columns expose validated bytes, while row references decode them as
+`bool`; invalid bit patterns are rejected instead of casting arbitrary bytes to
+`&[bool]`. View construction, borrowed iteration, and warmed batch refills have
+an allocation-counting test.
+
+The row adapters support Rust numeric primitives, bool, String, borrowed str,
+Cow strings and bytes, primitive Vec arrays, recursively nullable fields, and
+BTreeMap/HashMap fields. Vec<u8> is an Array(UInt8); use `#[row(bytes)]` to select
+a binary ClickHouse String. Borrowed byte slices and Cow byte slices select
+binary String automatically. Arbitrary type and const generics are rejected;
+struct lifetime parameters are supported.
+
+Rows without borrowed input lifetimes also implement `OwnedRow`. `RowClient`
+provides `insert_batch`, `insert_rows`, `query_views`, and `query_rows` using only
+synchronous `insert_block` and `query_blocks` transport primitives. `query_views`
+keeps backing blocks alive during the callback; `query_rows` explicitly
+materializes owned values.
+
+`cargo test -p clickhouse -p clickhouse-macros` includes a live Docker test. It
+starts `clickhouse/clickhouse-server:26.8.2.7` on ephemeral Native and HTTP ports,
+uses a controlled synchronous HTTP RowBinary fixture, verifies all four typed
+client operations, and removes its owned container on Drop. This fixture is not
+a replacement for integrated Native/HTTP transport tests.

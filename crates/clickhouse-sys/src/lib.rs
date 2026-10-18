@@ -72,6 +72,14 @@ pub mod ffi {
         fn block_append_string(block: Pin<&mut Block>, name: &str, values: &[String])
         -> Result<()>;
 
+        /// Append a `String` column from validated flat offsets and bytes.
+        fn block_append_string_flat(
+            block: Pin<&mut Block>,
+            name: &str,
+            offsets: &[u64],
+            bytes: &[u8],
+        ) -> Result<()>;
+
         /// Drop every row while keeping column capacity.
         fn block_clear(block: Pin<&mut Block>);
 
@@ -95,6 +103,12 @@ pub mod ffi {
 
         /// Materialized strings for a `String` column.
         fn block_column_strings(block: &Block, index: usize) -> Vec<String>;
+
+        /// Exclusive end offsets for a `String` column.
+        fn block_column_string_offsets(block: &Block, index: usize) -> Vec<u64>;
+
+        /// Flat bytes for a `String` column.
+        fn block_column_string_flat(block: &Block, index: usize) -> Vec<u8>;
 
         /// Retained element capacity for fixed-width columns.
         fn block_column_capacity(block: &Block, index: usize) -> usize;

@@ -1,9 +1,8 @@
-//! Error surface for the synchronous client.
+//! Structured schema, transport, and borrowed projection errors.
 
 use std::borrow::Cow;
 
-/// Errors returned by endpoint parsing, the native bridge, or block
-/// projections.
+/// A rejected configuration, schema, transport, or checked projection.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The endpoint text could not be parsed.
@@ -14,8 +13,8 @@ pub enum Error {
         /// Why parsing failed.
         message: Cow<'static, str>,
     },
-    /// The endpoint uses a transport that Ticket 01 does not implement.
-    #[error("unsupported transport `{scheme}://`; Ticket 01 supports tcp:// only")]
+    /// The endpoint uses a transport that is not implemented yet.
+    #[error("unsupported transport `{scheme}://`")]
     UnsupportedScheme {
         /// Scheme without the `://` separator.
         scheme: Cow<'static, str>,
@@ -26,11 +25,49 @@ pub enum Error {
         /// Diagnostic text from the bridge.
         message: Cow<'static, str>,
     },
-    /// A block column was missing, mismatched, or misaligned.
+    /// A native block column was missing, mismatched, or misaligned.
     #[error("block failure: {message}")]
     Block {
         /// Diagnostic text for the projection failure.
         message: Cow<'static, str>,
+    },
+    /// A configuration or fixture precondition was rejected.
+    #[error("configuration rejected: {reason}")]
+    Config {
+        /// Why the configuration is invalid.
+        reason: Cow<'static, str>,
+    },
+    /// A schema or derived row contract does not match the block.
+    #[error("schema mismatch: {reason}")]
+    SchemaMismatch {
+        /// Optional table name for context.
+        table: Option<Cow<'static, str>>,
+        /// Why the schema is invalid.
+        reason: Cow<'static, str>,
+    },
+    /// A fixed-width column could not be projected without copying.
+    #[error("zero-copy cast failed for column {col_idx} `{col_name}`: {reason}")]
+    ZeroCopyCast {
+        /// Column index in the block.
+        col_idx: usize,
+        /// Column name.
+        col_name: Cow<'static, str>,
+        /// Projection failure detail.
+        reason: Cow<'static, str>,
+    },
+    /// A named column is absent from the block.
+    #[error("column `{col_name}` not found")]
+    ColumnNotFound {
+        /// Missing column name.
+        col_name: Cow<'static, str>,
+    },
+    /// A row index is outside the projected block.
+    #[error("row {row_idx} is out of bounds (row_count {row_count})")]
+    RowIndexOutOfBounds {
+        /// Requested row index.
+        row_idx: usize,
+        /// Number of rows in the projection.
+        row_count: usize,
     },
 }
 
@@ -55,5 +92,16 @@ impl Error {
         Self::Block {
             message: message.into(),
         }
+    }
+}
+
+/// A synchronous SDK operation result.
+pub type Result<T, E = Error> = core::result::Result<T, E>;
+
+/// Construct a schema error without allocating for static diagnostics.
+pub(crate) fn schema(reason: impl Into<Cow<'static, str>>) -> Error {
+    Error::SchemaMismatch {
+        table: None,
+        reason: reason.into(),
     }
 }

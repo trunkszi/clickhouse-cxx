@@ -289,6 +289,76 @@ void block_append_string(Block& block, rust::Str name,
     block.inner().AppendColumn(key, column);
 }
 
+void block_append_string_flat(Block& block, rust::Str name,
+                              rust::Slice<const uint64_t> offsets,
+                              rust::Slice<const uint8_t> bytes) {
+    const std::string key = to_std(name);
+    if (offsets.empty()) {
+        if (!bytes.empty()) {
+            throw std::runtime_error("string offsets are empty but bytes are not");
+        }
+    }
+    uint64_t previous = 0;
+    for (const auto& offset : offsets) {
+        if (offset < previous || offset > bytes.size()) {
+            throw std::runtime_error("invalid string offsets");
+        }
+        previous = offset;
+    }
+    if (previous != bytes.size()) {
+        throw std::runtime_error("string offsets do not cover every byte");
+    }
+    std::shared_ptr<clickhouse::ColumnString> column;
+    bool created = false;
+    if (auto existing = find_column(block.inner(), key)) {
+        column = std::dynamic_pointer_cast<clickhouse::ColumnString>(existing);
+        if (!column) {
+            throw std::runtime_error("column kind mismatch for " + key);
+        }
+    } else {
+        column = std::make_shared<clickhouse::ColumnString>();
+        created = true;
+    }
+    previous = 0;
+    for (const auto& offset : offsets) {
+        const auto* start = reinterpret_cast<const char*>(bytes.data() + previous);
+        column->Append(std::string_view(start, offset - previous));
+        previous = offset;
+    }
+    if (created) {
+        block.inner().AppendColumn(key, column);
+    }
+}
+
+rust::Vec<uint64_t> block_column_string_offsets(const Block& block, size_t index) {
+    auto column = std::dynamic_pointer_cast<clickhouse::ColumnString>(block.inner().At(index));
+    if (!column) {
+        throw std::runtime_error("column is not a String column");
+    }
+    rust::Vec<uint64_t> offsets;
+    uint64_t total = 0;
+    for (size_t row = 0; row < column->Size(); ++row) {
+        total += column->At(row).size();
+        offsets.push_back(total);
+    }
+    return offsets;
+}
+
+rust::Vec<uint8_t> block_column_string_flat(const Block& block, size_t index) {
+    auto column = std::dynamic_pointer_cast<clickhouse::ColumnString>(block.inner().At(index));
+    if (!column) {
+        throw std::runtime_error("column is not a String column");
+    }
+    rust::Vec<uint8_t> bytes;
+    for (size_t row = 0; row < column->Size(); ++row) {
+        const auto value = column->At(row);
+        for (char byte : value) {
+            bytes.push_back(static_cast<uint8_t>(byte));
+        }
+    }
+    return bytes;
+}
+
 void block_clear(Block& block) { block.inner().Clear(); }
 
 void block_refresh(Block& block) { block.inner().RefreshRowCount(); }

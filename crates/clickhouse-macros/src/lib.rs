@@ -1,15 +1,13 @@
-//! Procedural macros for `clickhouse`.
-//!
-//! Ticket 01 ships the derive namespace only; the generated `Row`, `Batch`,
-//! and `BlockView` implementations arrive with the schema ticket.
-
+//! Derive reusable column buffers and checked borrowed row projections.
+mod generate;
+mod model;
 use proc_macro::TokenStream;
-
-/// Marker derive for the row contract.
-///
-/// The attribute is accepted so downstream crates can adopt the final API
-/// shape before the generator lands. It intentionally emits no items yet.
+/// Generate a row schema, SoA batch, block projection, and borrowed row type.
 #[proc_macro_derive(Row, attributes(row))]
-pub fn derive_row(_input: TokenStream) -> TokenStream {
-    TokenStream::new()
+pub fn derive_row(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    model::Model::parse(&input)
+        .map(generate::expand)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
