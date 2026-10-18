@@ -48,6 +48,7 @@ mod ffi {
         ping_before_query: bool,
         extra_hosts: Vec<String>,
         extra_ports: Vec<u16>,
+        compression: u8,
     }
 
     struct EchoOptions {
@@ -205,6 +206,8 @@ pub struct NativeOptions {
     pub extra_hosts: Vec<String>,
     /// Extra endpoint ports, paired with `extra_hosts`.
     pub extra_ports: Vec<u16>,
+    /// Block compression: 0 none, 1 LZ4, 2 ZSTD.
+    pub compression: u8,
 }
 
 impl Default for NativeOptions {
@@ -233,6 +236,7 @@ impl Default for NativeOptions {
             ping_before_query: false,
             extra_hosts: Vec::new(),
             extra_ports: Vec::new(),
+            compression: 0,
         }
     }
 }
@@ -331,6 +335,7 @@ impl NativeOptions {
             ping_before_query: self.ping_before_query,
             extra_hosts: self.extra_hosts.clone(),
             extra_ports: self.extra_ports.clone(),
+            compression: self.compression,
         }
     }
 }

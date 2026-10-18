@@ -39,7 +39,7 @@ impl Block {
     /// # Errors
     /// Unsupported column types or native conversion failures return an error.
     pub fn to_native(&self) -> Result<crate::NativeBlock> {
-        crate::row::native::to_native(self)
+        crate::row::native::to_native_block(self)
     }
     /// Copy supported columns from a native transport block into aligned buffers.
     /// # Errors

@@ -4,8 +4,8 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher, time::Instant};
 use clickhouse_sys::NativeOptions;
 
 use crate::{
-    Client, ClientConfig, Endpoint, EndpointHealth, EndpointSelection, Error, FailoverEvent,
-    FailoverPolicy, Scheme, TlsSettings, config::FailoverCallback, sys,
+    Client, ClientConfig, CompressionMethod, Endpoint, EndpointHealth, EndpointSelection, Error,
+    FailoverEvent, FailoverPolicy, Scheme, TlsSettings, config::FailoverCallback, sys,
 };
 pub(super) struct Managed {
     pub endpoints: Vec<Endpoint>,
@@ -58,7 +58,9 @@ impl Client {
         Ok(Self {
             inner,
             managed,
-            thread_bound: std::marker::PhantomData,
+            usable: true,
+            cleanup_error: None,
+            _not_send: std::marker::PhantomData,
         })
     }
     /// Register an observer for endpoint transitions after construction.
@@ -141,6 +143,7 @@ impl Client {
     }
 
     pub(super) fn prepare(&mut self) -> Result<(), Error> {
+        self.ready()?;
         self.observer_ready()?;
         if self.managed.needs_probe || self.managed.policy.ping {
             let started = Instant::now();
@@ -161,7 +164,10 @@ impl Client {
     }
 }
 impl Managed {
-    fn dial(&mut self, rotate: bool) -> Result<cxx::UniquePtr<sys::ffi::Client>, Error> {
+    pub(super) fn dial(
+        &mut self,
+        rotate: bool,
+    ) -> Result<cxx::UniquePtr<sys::ffi::Client>, Error> {
         let count = self.endpoints.len();
         let mut candidates: Vec<_> = (0..count)
             .filter(|&i| self.health[i].available(Instant::now()))
@@ -235,6 +241,9 @@ impl Managed {
     }
 }
 fn options(endpoint: &Endpoint, config: &ClientConfig<'_>) -> NativeOptions {
+    let connect_timeout = config.timeout.unwrap_or_else(|| config.tls.connect_timeout());
+    let read_timeout = config.timeout.unwrap_or_else(|| config.tls.read_timeout());
+    let write_timeout = config.timeout.unwrap_or_else(|| config.tls.write_timeout());
     NativeOptions {
         host: String::from(endpoint.host()),
         port: endpoint.port(),
@@ -246,9 +255,9 @@ fn options(endpoint: &Endpoint, config: &ClientConfig<'_>) -> NativeOptions {
         ca_pem: config.tls.ca_pem().to_vec(),
         use_native_roots: config.tls.use_native_roots(),
         skip_verification: config.tls.skip_verification(),
-        connect_timeout_ms: TlsSettings::timeout_ms(config.tls.connect_timeout()),
-        recv_timeout_ms: TlsSettings::timeout_ms(config.tls.read_timeout()),
-        send_timeout_ms: TlsSettings::timeout_ms(config.tls.write_timeout()),
+        connect_timeout_ms: TlsSettings::timeout_ms(connect_timeout),
+        recv_timeout_ms: TlsSettings::timeout_ms(read_timeout),
+        send_timeout_ms: TlsSettings::timeout_ms(write_timeout),
         tcp_nodelay: config.tls.tcp_nodelay(),
         tcp_keepalive: config.tls.tcp_keepalive(),
         keepalive_idle_secs: config.tls.keepalive_idle().as_secs(),
@@ -257,6 +266,11 @@ fn options(endpoint: &Endpoint, config: &ClientConfig<'_>) -> NativeOptions {
         send_retries: 0,
         retry_timeout_secs: 0,
         ping_before_query: false,
+        compression: match config.compression {
+            CompressionMethod::None => 0,
+            CompressionMethod::Lz4 => 1,
+            CompressionMethod::Zstd => 2,
+        },
         ..NativeOptions::default()
     }
 }

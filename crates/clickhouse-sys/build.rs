@@ -113,6 +113,7 @@ fn main() {
         .file("src/shim_composite.cpp")
         .file("cpp/rustls_socket.cpp")
         .file("cpp/native_client.cpp")
+        .file("src/shim_stream.cpp")
         .include("cpp")
         .define("CH_NON_OPTIONAL_CURRENT_ENDPOINT", "1")
         .define("CH_MAP_BOOL_TO_UINT8", "0")
@@ -137,6 +138,7 @@ fn main() {
         "src/shim_client.cpp",
         "src/shim_column.cpp",
         "src/shim_composite.cpp",
+        "src/shim_stream.cpp",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

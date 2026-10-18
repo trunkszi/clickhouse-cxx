@@ -9,6 +9,42 @@
 #[cxx::bridge(namespace = "chcxx")]
 pub mod ffi {
     // SAFETY: C++ owns each opaque handle; references and slices cannot outlive their call.
+    /// Scalar server event fields shared across the language boundary.
+    #[derive(Default)]
+    struct EventFields {
+        rows: u64,
+        bytes: u64,
+        total_rows: u64,
+        written_rows: u64,
+        written_bytes: u64,
+        blocks: u64,
+        rows_before_limit: u64,
+        applied_limit: bool,
+        calculated_rows_before_limit: bool,
+    }
+    struct ExceptionFields {
+        code: i32,
+        name: String,
+        display_text: String,
+        stack_trace: String,
+    }
+    struct ServerInfo {
+        name: String,
+        timezone: String,
+        display_name: String,
+        version_major: u64,
+        version_minor: u64,
+        version_patch: u64,
+        revision: u64,
+    }
+    struct Version {
+        major: u16,
+        minor: u16,
+        patch: u16,
+        build: u16,
+        extra: String,
+    }
+
     unsafe extern "C++" {
         include!("shim.h");
 
@@ -18,6 +54,10 @@ pub mod ffi {
         type Block;
         /// Owning list of blocks returned by a select query.
         type BlockList;
+        /// Query metadata retained for one synchronous request.
+        type NativeQuery;
+        /// Server event delivered to a stack-scoped callback.
+        type NativeEvent;
 
         /// Open a Native TCP connection.
         fn new_client(
@@ -120,6 +160,100 @@ pub mod ffi {
 
         /// Retained element capacity for fixed-width columns.
         fn block_column_capacity(block: &Block, index: usize) -> usize;
+
+        /// Server type name of a column by index.
+        fn block_column_type(block: &Block, index: usize) -> Result<String>;
+
+        /// Open a Native TCP connection with compression and timeout options.
+        fn new_client_options(
+            host: &str,
+            port: u16,
+            user: &str,
+            password: &str,
+            database: &str,
+            compression: u8,
+            timeout_ms: u64,
+        ) -> Result<UniquePtr<Client>>;
+
+        /// Reset the underlying connection.
+        fn reset(client: Pin<&mut Client>) -> Result<()>;
+
+        /// Create one query with caller-supplied identity.
+        fn new_query(sql: &str, id: &str) -> UniquePtr<NativeQuery>;
+        /// Attach one flagged setting.
+        fn set_setting(query: Pin<&mut NativeQuery>, key: &str, value: &str, flags: u64);
+        /// Attach one typed placeholder value; `is_null` distinguishes NULL.
+        fn set_param(query: Pin<&mut NativeQuery>, key: &str, value: &str, is_null: bool);
+        /// Attach an OpenTelemetry tracing context.
+        fn set_tracing(
+            query: Pin<&mut NativeQuery>,
+            high: u64,
+            low: u64,
+            span: u64,
+            state: &str,
+            flags: u8,
+        );
+
+        /// # Safety
+        /// The callback context must remain valid throughout this synchronous call.
+        unsafe fn begin_select(
+            client: Pin<&mut Client>,
+            query: Pin<&mut NativeQuery>,
+            events: u8,
+            context: *mut u8,
+            callback: unsafe fn(*mut u8, &NativeEvent) -> bool,
+        ) -> Result<()>;
+        /// # Safety
+        /// The callback context must remain valid throughout this synchronous call.
+        unsafe fn next_block(
+            client: Pin<&mut Client>,
+            context: *mut u8,
+            callback: unsafe fn(*mut u8, &NativeEvent) -> bool,
+        ) -> Result<UniquePtr<Block>>;
+        /// # Safety
+        /// The callback context must remain valid throughout this synchronous call.
+        unsafe fn cancel(
+            client: Pin<&mut Client>,
+            context: *mut u8,
+            callback: unsafe fn(*mut u8, &NativeEvent) -> bool,
+        ) -> Result<()>;
+        /// Whether a select still needs output or cancellation cleanup.
+        fn is_selecting(client: &Client) -> bool;
+        /// Begin one interactive insert and return its server schema.
+        fn begin_insert(client: Pin<&mut Client>, query: &NativeQuery) -> Result<UniquePtr<Block>>;
+        /// Send one block inside the active insert statement.
+        fn send_insert_block(client: Pin<&mut Client>, block: &Block) -> Result<()>;
+        /// Finish the active insert statement.
+        fn end_insert(client: Pin<&mut Client>) -> Result<()>;
+        /// Whether the server still expects insert blocks.
+        fn is_inserting(client: &Client) -> bool;
+        /// Register one named in-memory table for the next select.
+        fn add_external(client: Pin<&mut Client>, name: &str, block: &Block);
+        /// # Safety
+        /// The callback context and every registered external table name
+        /// and block must remain valid throughout this synchronous call.
+        unsafe fn select_external(
+            client: Pin<&mut Client>,
+            query: Pin<&mut NativeQuery>,
+            events: u8,
+            context: *mut u8,
+            callback: unsafe fn(*mut u8, &NativeEvent) -> bool,
+        ) -> Result<()>;
+        /// Drop every registered external table.
+        fn clear_external(client: Pin<&mut Client>);
+        /// Handshake information reported by the connected server.
+        fn get_server_info(client: &Client) -> ServerInfo;
+        /// Statically linked `clickhouse-cpp` version.
+        fn get_version() -> Version;
+
+        /// Event kind tag: data, progress, profile, profile events, log, exception.
+        fn event_kind(event: &NativeEvent) -> u8;
+        /// Scalar fields for progress and profile events.
+        fn event_fields(event: &NativeEvent) -> EventFields;
+        /// Structured server exception fields.
+        fn event_exception(event: &NativeEvent) -> ExceptionFields;
+        /// Copy the event's block into an owned handle.
+        fn event_block(event: &NativeEvent) -> UniquePtr<Block>;
 
         // C++ column-matrix handles used by the 17-family type system.
 

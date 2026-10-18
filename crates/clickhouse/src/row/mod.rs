@@ -6,6 +6,7 @@ pub(crate) mod native;
 mod owned;
 mod wire_bridge;
 pub use client::RowClient;
+pub(crate) use native::to_native_block;
 pub use owned::{OwnedField, OwnedRow};
 mod composite;
 mod variable;
