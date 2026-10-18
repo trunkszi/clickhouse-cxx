@@ -219,6 +219,15 @@ std::unique_ptr<Block> block_list_get(const BlockList& list, size_t index) {
 
 std::unique_ptr<Block> block_new() { return std::make_unique<Block>(); }
 
+void block_append_column_handle(Block& block, rust::Str name,
+                                const ColumnHandle& column) {
+    block.inner().AppendColumn(std::string(name.data(), name.size()), column.ref());
+}
+
+std::shared_ptr<ColumnHandle> block_column_handle(const Block& block, size_t index) {
+    return std::make_shared<ColumnHandle>(block.inner().At(index));
+}
+
 void block_append_u8(Block& block, rust::Str name,
                      rust::Slice<const uint8_t> values) {
     append_numeric<uint8_t>(block.inner(), name, values);

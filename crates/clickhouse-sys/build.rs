@@ -6,7 +6,6 @@ use std::{
     process::Command,
 };
 
-const VENDOR_PATH: &str = "/root/worktrees-rs/clickhouse-cxx-vendor/clickhouse-cpp";
 const REPOSITORY: &str = "https://github.com/ClickHouse/clickhouse-cpp.git";
 
 /// Return the first source tree that contains the public client header.
@@ -17,22 +16,32 @@ fn resolve_source() -> PathBuf {
             return candidate;
         }
     }
-    let vendor = PathBuf::from(VENDOR_PATH);
-    if is_source_tree(&vendor) {
-        return vendor;
-    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let relative = manifest.join("../../vendor/clickhouse-cpp");
     if is_source_tree(&relative) {
         return relative;
     }
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
-    let fetched = out_dir.join("clickhouse-cpp-src");
+    let fetched = target_cache_dir();
     if is_source_tree(&fetched) {
         return fetched;
     }
     clone_source(&fetched);
     fetched
+}
+
+/// Compile-time cache next to Cargo's target directory.
+fn target_cache_dir() -> PathBuf {
+    if let Ok(configured) = env::var("CARGO_TARGET_DIR") {
+        return PathBuf::from(configured)
+            .join("vendor-cache")
+            .join("clickhouse-cpp");
+    }
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
+    // OUT_DIR is <target>/<profile>/build/<crate>-<hash>/out.
+    if let Some(target) = out_dir.ancestors().nth(4) {
+        return target.join("vendor-cache").join("clickhouse-cpp");
+    }
+    out_dir.join("clickhouse-cpp-src")
 }
 
 /// A source tree is usable when the public header is present.
@@ -87,13 +96,26 @@ fn main() {
 
     cxx_build::bridge("src/lib.rs")
         .file("src/shim.cpp")
+        .file("src/shim_block.cpp")
+        .file("src/shim_client.cpp")
+        .file("src/shim_column.cpp")
+        .file("src/shim_composite.cpp")
         .include("src")
         .include(&source)
         .flag_if_supported("-std=c++17")
         .compile("clickhouse-sys");
 
-    println!("cargo:rerun-if-changed=src/lib.rs");
-    println!("cargo:rerun-if-changed=src/shim.cpp");
-    println!("cargo:rerun-if-changed=src/shim.h");
+    for path in [
+        "src/lib.rs",
+        "src/shim.cpp",
+        "src/shim.h",
+        "src/shim_matrix.h",
+        "src/shim_block.cpp",
+        "src/shim_client.cpp",
+        "src/shim_column.cpp",
+        "src/shim_composite.cpp",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+    }
     println!("cargo:rerun-if-env-changed=CLICKHOUSE_CPP_DIR");
 }

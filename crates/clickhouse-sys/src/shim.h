@@ -3,6 +3,7 @@
 #include "clickhouse/block.h"
 #include "clickhouse/client.h"
 #include "rust/cxx.h"
+#include "shim_matrix.h"
 
 #include <cstdint>
 #include <memory>
@@ -52,6 +53,8 @@ size_t block_list_len(const BlockList& list);
 std::unique_ptr<Block> block_list_get(const BlockList& list, size_t index);
 
 std::unique_ptr<Block> block_new();
+void block_append_column_handle(Block& block, rust::Str name, const ColumnHandle& column);
+std::shared_ptr<ColumnHandle> block_column_handle(const Block& block, size_t index);
 void block_append_u8(Block& block, rust::Str name, rust::Slice<const uint8_t> values);
 void block_append_u16(Block& block, rust::Str name, rust::Slice<const uint16_t> values);
 void block_append_u32(Block& block, rust::Str name, rust::Slice<const uint32_t> values);
