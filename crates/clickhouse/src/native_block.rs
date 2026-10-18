@@ -355,6 +355,12 @@ impl NativeBlock {
 
     /// Project a validated column index without materializing its name.
     fn column_slice_at<T: FixedColumn>(&self, index: usize) -> Result<&[T], Error> {
+        let columns = self.columns();
+        if index >= columns {
+            return Err(Error::block(format!(
+                "column index {index} is outside {columns} columns"
+            )));
+        }
         let kind = sys::ffi::block_column_kind(&self.inner, index);
         if kind != T::KIND {
             return Err(Error::block(format!(
@@ -390,12 +396,6 @@ impl NativeBlock {
         col_idx: usize,
         dst: &mut [T],
     ) -> Result<usize, Error> {
-        if col_idx >= self.columns() {
-            return Err(Error::block(format!(
-                "column index {col_idx} is out of range ({} columns)",
-                self.columns()
-            )));
-        }
         let src = self.column_slice_at::<T>(col_idx)?;
         if dst.len() < src.len() {
             return Err(Error::block(format!(
@@ -463,34 +463,7 @@ impl NativeBlock {
         index: usize,
         dst: &mut [T],
     ) -> Result<usize, Error> {
-        let columns = self.columns();
-        if index >= columns {
-            return Err(Error::block(format!(
-                "column index {index} is outside {columns} columns"
-            )));
-        }
-        let kind = sys::ffi::block_column_kind(&self.inner, index);
-        if kind != T::KIND {
-            return Err(Error::block(format!(
-                "column {index} has kind {kind}, expected {}",
-                T::KIND
-            )));
-        }
-        let bytes = sys::ffi::block_column_bytes(&self.inner, index);
-        if bytes.is_empty() {
-            return Ok(0);
-        }
-        let address = bytes.as_ptr() as usize;
-        let required = std::mem::align_of::<T>();
-        if !address.is_multiple_of(required) {
-            return Err(Error::block(format!(
-                "column {index} data pointer 0x{address:x} is not {required}-byte aligned (kind \
-                 {kind}, bytes {})",
-                bytes.len()
-            )));
-        }
-        let source = <[T]>::ref_from_bytes(bytes)
-            .map_err(|error| Error::block(format!("column {index} cast failed: {error:?}")))?;
+        let source = self.column_slice_at::<T>(index)?;
         let copied = source.len().min(dst.len());
         dst[..copied].copy_from_slice(&source[..copied]);
         Ok(copied)
@@ -536,5 +509,36 @@ impl NativeBlock {
 impl Default for NativeBlock {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caller_slices_keep_full_and_partial_copy_contracts() {
+        let mut block = NativeBlock::new();
+        block.push_u64("id", &[11, 22, 33]).unwrap();
+        let mut full = [0_u64; 4];
+        assert_eq!(block.read_into_slice(0, &mut full).unwrap(), 3);
+        assert_eq!(full, [11, 22, 33, 0]);
+        let mut short = [99_u64; 2];
+        assert!(block.read_into_slice(0, &mut short).is_err());
+        assert_eq!(short, [99, 99]);
+        assert_eq!(block.copy_column_into_slice(0, &mut short).unwrap(), 2);
+        assert_eq!(short, [11, 22]);
+    }
+
+    #[test]
+    fn both_copy_paths_reject_invalid_columns_before_writing() {
+        let mut block = NativeBlock::new();
+        block.push_u64("id", &[11]).unwrap();
+        let mut destination = [99_u32];
+        assert!(block.read_into_slice(0, &mut destination).is_err());
+        assert!(block.copy_column_into_slice(0, &mut destination).is_err());
+        assert!(block.read_into_slice(1, &mut destination).is_err());
+        assert!(block.copy_column_into_slice(1, &mut destination).is_err());
+        assert_eq!(destination, [99]);
     }
 }

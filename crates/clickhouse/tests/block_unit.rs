@@ -92,3 +92,21 @@ fn block_reports_missing_and_mismatched_columns() {
         Err(Error::Block { .. })
     ));
 }
+
+/// Incorrect declared widths fail before committing any column or row count.
+#[test]
+fn scenario_fixed_width_mismatch() {
+    let mut block = clickhouse::Block::new();
+    for ty in ["UInt32", "String", "FixedString(0)"] {
+        assert!(matches!(
+            block.append_fixed_slice("value", ty, &[1_u64]),
+            Err(Error::SchemaMismatch { .. })
+        ));
+        assert_eq!(block.row_count(), 0);
+        assert_eq!(block.column_count(), 0);
+    }
+    block
+        .append_fixed_slice("value", "UInt64", &[1_u64])
+        .unwrap();
+    assert_eq!(block.row_count(), 1);
+}

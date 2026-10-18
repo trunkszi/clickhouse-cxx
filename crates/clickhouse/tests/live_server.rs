@@ -115,7 +115,7 @@ fn typed_rows(client: &mut Client, id: u64) {
     let source = batch.to_block().unwrap();
     let source_view = EventBlockView::try_from_block(&source).unwrap();
     assert_eq!(
-        source_view.id.as_ptr(),
+        source_view.column_id().as_ptr(),
         source.column_slice::<u64>(0).unwrap().as_ptr()
     );
     RowClient::insert_batch(client, &batch).unwrap_or_else(|error| {

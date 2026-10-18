@@ -3,30 +3,11 @@
 use std::borrow::Cow;
 
 use crate::{
-    ArrayColumn, Column, FixedKind, MapColumn, NullableColumn, StringColumn, TypeCode, WireColumn,
+    ArrayColumn, Column, MapColumn, NullableColumn, StringColumn, TypeCode, WireColumn,
     column::{AlignedBytes, ColumnData},
     error::{Error, Result, schema},
     sys,
 };
-
-fn fixed_kind(type_name: &str) -> Option<FixedKind> {
-    Some(match type_name {
-        "UInt8" => FixedKind::UInt8,
-        "UInt16" => FixedKind::UInt16,
-        "UInt32" => FixedKind::UInt32,
-        "UInt64" => FixedKind::UInt64,
-        "UInt128" => FixedKind::UInt128,
-        "Int8" => FixedKind::Int8,
-        "Int16" => FixedKind::Int16,
-        "Int32" => FixedKind::Int32,
-        "Int64" => FixedKind::Int64,
-        "Int128" => FixedKind::Int128,
-        "Float32" => FixedKind::Float32,
-        "Float64" => FixedKind::Float64,
-        "Bool" => FixedKind::Bool,
-        _ => return None,
-    })
-}
 
 fn unsupported(type_name: &str) -> Error {
     Error::SchemaMismatch {
@@ -40,8 +21,8 @@ fn unsupported(type_name: &str) -> Error {
 fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<WireColumn> {
     match &column.data {
         ColumnData::Fixed(bytes) => {
-            let kind =
-                fixed_kind(&column.type_name).ok_or_else(|| unsupported(&column.type_name))?;
+            let kind = crate::type_layout::fixed_kind(&column.type_name)
+                .ok_or_else(|| unsupported(&column.type_name))?;
             let raw = bytes.as_bytes();
             let width = if column.is_empty() {
                 0
@@ -57,10 +38,10 @@ fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<WireCo
             let slice = raw
                 .get(begin..finish)
                 .ok_or_else(|| schema("array value slice out of bounds"))?;
-            Ok(WireColumn::fixed_bytes(kind, &column.type_name, slice).map_err(wire_error)?)
+            Ok(WireColumn::fixed_bytes(kind, &column.type_name, slice).map_err(Error::from)?)
         }
         ColumnData::Strings { offsets, bytes } => {
-            let mut column = StringColumn::new().map_err(wire_error)?;
+            let mut column = StringColumn::new().map_err(Error::from)?;
             for row in start..end {
                 let begin = if row == 0 {
                     0
@@ -77,18 +58,11 @@ fn scalar_from_slice(column: &Column, start: usize, end: usize) -> Result<WireCo
                 let value = bytes
                     .get(begin..finish)
                     .ok_or_else(|| schema("string value out of bounds"))?;
-                column.append_bytes(value).map_err(wire_error)?;
+                column.append_bytes(value).map_err(Error::from)?;
             }
             Ok(WireColumn::String(column))
         }
         _ => Err(unsupported(&column.type_name)),
-    }
-}
-
-fn wire_error(error: crate::WireError) -> Error {
-    Error::SchemaMismatch {
-        table: None,
-        reason: Cow::Owned(format!("{error}")),
     }
 }
 
@@ -100,28 +74,28 @@ fn wire_error(error: crate::WireError) -> Error {
 pub(crate) fn to_wire(column: &Column) -> Result<WireColumn> {
     match &column.data {
         ColumnData::Fixed(bytes) => {
-            let kind =
-                fixed_kind(&column.type_name).ok_or_else(|| unsupported(&column.type_name))?;
-            WireColumn::fixed_bytes(kind, &column.type_name, bytes.as_bytes()).map_err(wire_error)
+            let kind = crate::type_layout::fixed_kind(&column.type_name)
+                .ok_or_else(|| unsupported(&column.type_name))?;
+            WireColumn::fixed_bytes(kind, &column.type_name, bytes.as_bytes()).map_err(Error::from)
         }
         ColumnData::Strings { .. } => scalar_from_slice(column, 0, column.len()),
         ColumnData::Array { offsets, values } => {
-            let mut array = ArrayColumn::new(&values.type_name).map_err(wire_error)?;
+            let mut array = ArrayColumn::new(&values.type_name).map_err(Error::from)?;
             let mut previous = 0_u64;
             for &offset in offsets {
                 let end = offset as usize;
                 let row = scalar_from_slice(values, previous as usize, end)?;
-                array.append_row(&row).map_err(wire_error)?;
+                array.append_row(&row).map_err(Error::from)?;
                 previous = offset;
             }
             Ok(WireColumn::Array(Box::new(array)))
         }
         ColumnData::Nullable { null_map, values } => {
             let inner = to_wire(values)?;
-            let mut nullable = NullableColumn::new(&inner).map_err(wire_error)?;
-            nullable.append_nested_column(&inner).map_err(wire_error)?;
+            let mut nullable = NullableColumn::new(&inner).map_err(Error::from)?;
+            nullable.append_nested_column(&inner).map_err(Error::from)?;
             for flag in null_map {
-                nullable.append_null_flag(*flag == 1).map_err(wire_error)?;
+                nullable.append_null_flag(*flag == 1).map_err(Error::from)?;
             }
             Ok(WireColumn::Nullable(Box::new(nullable)))
         }
@@ -130,13 +104,15 @@ pub(crate) fn to_wire(column: &Column) -> Result<WireColumn> {
             keys,
             values,
         } => {
-            let mut map = MapColumn::new(&keys.type_name, &values.type_name).map_err(wire_error)?;
+            let mut map =
+                MapColumn::new(&keys.type_name, &values.type_name).map_err(Error::from)?;
             let mut previous = 0_u64;
             for &offset in offsets {
                 let end = offset as usize;
                 let row_keys = scalar_from_slice(keys, previous as usize, end)?;
                 let row_values = scalar_from_slice(values, previous as usize, end)?;
-                map.append_row(&row_keys, &row_values).map_err(wire_error)?;
+                map.append_row(&row_keys, &row_values)
+                    .map_err(Error::from)?;
                 previous = offset;
             }
             Ok(WireColumn::Map(map))
@@ -144,13 +120,19 @@ pub(crate) fn to_wire(column: &Column) -> Result<WireColumn> {
     }
 }
 
-fn fixed_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Column {
-    Column {
+fn fixed_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Result<Column> {
+    let bytes = handle.fixed_bytes();
+    if handle.size() > 0 && bytes.is_empty() {
+        return Err(Error::UnsupportedColumnType {
+            type_name: handle.type_name(),
+        });
+    }
+    Ok(Column {
         name: Cow::Owned(name.to_owned()),
         type_name: Cow::Owned(handle.type_name()),
-        data: ColumnData::Fixed(AlignedBytes::from_bytes(handle.fixed_bytes())),
+        data: ColumnData::Fixed(AlignedBytes::from_bytes(bytes)),
         rows: handle.size(),
-    }
+    })
 }
 
 fn string_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Column {
@@ -195,8 +177,11 @@ fn map_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Result<Colu
     let mut key_offsets = Vec::new();
     let mut value_bytes = Vec::new();
     let mut value_offsets = Vec::new();
-    let mut key_type = String::new();
-    let mut value_type = String::new();
+    let type_name = handle.type_name();
+    let (mut key_type, mut value_type) = match crate::type_layout::layout(&type_name)? {
+        crate::type_layout::Layout::Map(keys, values) => (keys.to_owned(), values.to_owned()),
+        _ => return Err(schema("map handle has a non-Map type name")),
+    };
     for row in 0..rows {
         let tuple = handle.map_row(row);
         let tuple = tuple
@@ -224,7 +209,6 @@ fn map_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Result<Colu
     }
     let keys = map_scalar_column(key_type, key_bytes, key_offsets);
     let values = map_scalar_column(value_type, value_bytes, value_offsets);
-    let type_name = format!("Map({},{})", keys.type_name, values.type_name);
     Ok(Column {
         name: Cow::Owned(name.to_owned()),
         type_name: Cow::Owned(type_name),
@@ -243,7 +227,7 @@ fn map_column_from_handle(handle: &sys::ColumnHandle, name: &str) -> Result<Colu
 ///
 /// Returns an error for unsupported column kinds or bridge failures.
 pub(crate) fn from_wire(handle: &sys::ColumnHandle, name: &str) -> Result<Column> {
-    match TypeCode::from_i32(handle.type_code()).map_err(wire_error)? {
+    match TypeCode::from_i32(handle.type_code()).map_err(Error::from)? {
         TypeCode::String | TypeCode::Json => Ok(string_column_from_handle(handle, name)),
         TypeCode::Array => {
             let offsets = handle.array_offsets().to_vec();
@@ -280,6 +264,41 @@ pub(crate) fn from_wire(handle: &sys::ColumnHandle, name: &str) -> Result<Column
             })
         }
         TypeCode::Map => map_column_from_handle(handle, name),
-        _ => Ok(fixed_column_from_handle(handle, name)),
+        _ => fixed_column_from_handle(handle, name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_native_map_retains_declared_child_types() {
+        let map = MapColumn::new("String", "UInt64").unwrap();
+        let handle = WireColumn::Map(map);
+        let result = from_wire(handle.wire_handle().unwrap(), "attributes").unwrap();
+        assert!(crate::type_layout::same_type(
+            &result.type_name,
+            "Map(String, UInt64)"
+        ));
+        let ColumnData::Map { keys, values, .. } = result.data else {
+            panic!("expected map")
+        };
+        assert_eq!(keys.type_name, "String");
+        assert_eq!(values.type_name, "UInt64");
+    }
+
+    #[test]
+    fn unsupported_nonempty_native_column_reports_its_type() {
+        let mut tuple = crate::TupleColumn::new(&["UInt8", "String"]).unwrap();
+        tuple.append_fixed(0, &[7]).unwrap();
+        tuple.append_str(1, "value").unwrap();
+        let error = match from_wire(tuple.wire_handle(), "tuple") {
+            Ok(_) => panic!("unsupported tuple projection succeeded"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::UnsupportedColumnType {type_name} if type_name.contains("Tuple"))
+        );
     }
 }

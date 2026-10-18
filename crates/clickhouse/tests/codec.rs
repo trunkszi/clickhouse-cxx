@@ -155,3 +155,59 @@ fn invalid_or_zero_progress_rows_fail_closed() {
     }
     assert!(SerdeBridge::rows_to_block(&[UnknownType { value: None }]).is_err());
 }
+
+/// A tiny truncated response cannot request a large String offsets allocation.
+#[test]
+fn integration_scenario_native_truncated_large_string_column_is_rejected() {
+    let mut bytes = vec![1, 0x80, 0x80, 0x80, 8, 1, b's', 6];
+    bytes.extend_from_slice(b"String");
+    let error = decode_blocks(&bytes, HTTP_NATIVE_REVISION).err().unwrap();
+    assert!(error.to_string().contains("truncated string lengths"));
+}
+
+/// Arrow stream framing accepts clean boundaries and rejects partial length prefixes.
+#[test]
+fn integration_scenario_stream_requires_complete_message_prefixes() {
+    use std::sync::Arc;
+
+    use arrow_array::{Float64Array, RecordBatch};
+    use arrow_ipc::writer::StreamWriter;
+    use arrow_schema::{DataType, Field, Schema};
+    use clickhouse::ArrowBlockView;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "id",
+        DataType::Float64,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Float64Array::from(vec![1.0]))],
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    let mut writer = StreamWriter::try_new(&mut bytes, &schema).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
+    drop(writer);
+    let bare = &bytes[..bytes.len() - 8];
+    assert!(ArrowBlockView::decode_stream(bare).is_ok());
+    assert!(ArrowBlockView::decode_stream(&bytes).is_ok());
+    let mut legacy = bare.to_vec();
+    legacy.extend_from_slice(&[0; 4]);
+    assert!(ArrowBlockView::decode_stream(&legacy).is_ok());
+    for width in 1..=3 {
+        for byte in [0, 1, 255] {
+            let mut truncated = bare.to_vec();
+            truncated.extend(std::iter::repeat_n(byte, width));
+            assert!(ArrowBlockView::decode_stream(&truncated).is_err());
+            let mut trailing = bytes.clone();
+            trailing.extend(std::iter::repeat_n(byte, width));
+            assert!(ArrowBlockView::decode_stream(&trailing).is_err());
+        }
+    }
+    for width in 4..8 {
+        let mut truncated = bare.to_vec();
+        truncated.extend_from_slice(&[255, 255, 255, 255, 0, 0, 0][..width]);
+        assert!(ArrowBlockView::decode_stream(&truncated).is_err());
+    }
+}

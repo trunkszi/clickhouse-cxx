@@ -90,6 +90,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tuple = TupleColumn::new(&["UInt32", "String"])?;
     tuple.append_fixed(0, &7_u32.to_le_bytes())?;
     tuple.append_str(1, "tuple")?;
+    let left = tuple.child(0).expect("tuple child 0");
+    let right = tuple.child(1).expect("tuple child 1");
+    println!(
+        "  tuple_child_0_bytes={:?} tuple_child_1={:?}",
+        left.as_ref().expect("tuple child 0").fixed_bytes(),
+        right.as_ref().expect("tuple child 1").string_at(0)
+    );
+
     block.append("tup", WireColumn::Tuple(tuple))?;
 
     let mut map = MapColumn::new("String", "UInt64")?;
@@ -140,16 +148,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  json={:?}", block.column_str("js", 0)?);
     println!("  nullable_nulls={:?}", block.column_nulls("n")?);
     println!("  array_offsets={:?}", block.column_offsets("arr")?);
-
-    let tuple_handle = block.column_handle("tup")?;
-    let tuple_handle = tuple_handle.as_ref().expect("tuple handle");
-    let left = tuple_handle.tuple_at(0);
-    let right = tuple_handle.tuple_at(1);
-    println!(
-        "  tuple_child_0_bytes={:?} tuple_child_1={:?}",
-        left.as_ref().expect("tuple child 0").fixed_bytes(),
-        right.as_ref().expect("tuple child 1").string_at(0)
-    );
 
     // ---------------------------------------------------------------------
     // Geo nested shapes.

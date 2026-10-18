@@ -11,6 +11,22 @@ pub trait RowClient {
     /// # Errors
     /// Transport, server, or decoding failures return an error.
     fn query_blocks(&mut self, sql: &str) -> Result<Vec<Block>>;
+    /// Deliver blocks in order; transports may override this to stream incrementally.
+    ///
+    /// The default implementation buffers the complete query result. A callback
+    /// error stops delivery; streaming implementations must drain or cancel safely.
+    /// # Errors
+    /// Transport, decoding, and callback failures propagate unchanged.
+    fn query_blocks_for_each(
+        &mut self,
+        sql: &str,
+        mut on_block: impl FnMut(Block) -> Result<()>,
+    ) -> Result<()> {
+        for block in self.query_blocks(sql)? {
+            on_block(block)?;
+        }
+        Ok(())
+    }
     /// Insert a reusable batch using its declared table name.
     /// # Errors
     /// Missing table metadata or block/transport errors reject the operation.
@@ -39,10 +55,7 @@ pub trait RowClient {
         R: Row,
         F: for<'a> FnMut(R::View<'a>) -> Result<()>,
     {
-        for block in self.query_blocks(sql)? {
-            visit(R::View::try_from_block(&block)?)?;
-        }
-        Ok(())
+        self.query_blocks_for_each(sql, |block| visit(R::View::try_from_block(&block)?))
     }
     /// Materialize owned rows from the same checked borrowed projections.
     /// # Errors
@@ -132,11 +145,11 @@ pub trait RowClient {
         T: serde::de::DeserializeOwned,
         F: FnMut(T) -> Result<()>,
     {
-        let blocks = self.query_blocks(sql)?;
         let mut count = 0;
-        for block in &blocks {
-            count += SerdeBridge::block_to_rows_with(block, &mut on_row)?;
-        }
+        self.query_blocks_for_each(sql, |block| {
+            count += SerdeBridge::block_to_rows_with(&block, &mut on_row)?;
+            Ok(())
+        })?;
         Ok(count)
     }
     /// Append queried owned rows to `dst`.
@@ -176,11 +189,16 @@ pub trait RowClient {
     }
     /// Clear and refill a caller-provided reusable batch.
     /// # Errors
-    /// Transport, projection, or batch capacity errors propagate.
+    /// Transport or schema errors leave the existing batch unchanged.
     fn query_batch_into<R: Row>(&mut self, sql: &str, dst: &mut R::Batch) -> Result<usize> {
+        let blocks = self.query_blocks(sql)?;
+        for block in &blocks {
+            R::View::try_from_block(block)?;
+        }
         dst.clear();
         let mut count = 0;
-        self.query_views::<R, _>(sql, |view| {
+        for block in &blocks {
+            let view = R::View::try_from_block(block)?;
             for index in 0..view.len() {
                 dst.push_ref(
                     view.get(index)
@@ -188,8 +206,7 @@ pub trait RowClient {
                 );
                 count += 1;
             }
-            Ok(())
-        })?;
+        }
         Ok(count)
     }
     /// Refill a caller-provided reusable block in place.

@@ -297,7 +297,7 @@ fn real_server_row_roundtrip() {
         .query_views::<LiveRow, _>(query, |view| {
             assert_eq!(view.len(), 3);
             for row in view.iter() {
-                assert_eq!(row.event_id, view.event_id[visited]);
+                assert_eq!(row.event_id, view.column_event_id()[visited]);
                 visited += 1;
             }
             assert!(view.get(3).is_none());

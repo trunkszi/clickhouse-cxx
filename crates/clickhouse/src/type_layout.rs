@@ -65,48 +65,42 @@ pub(crate) fn layout(type_name: &str) -> Result<Layout<'_>, Error> {
 #[must_use]
 pub(crate) fn fixed_width(type_name: &str) -> Option<usize> {
     let name = type_name.trim();
-    if name.starts_with("Nullable(") || name.starts_with("Array(") || name == "String" {
-        return None;
+    for (family, width) in [
+        ("DateTime64", 8),
+        ("Time64", 8),
+        ("Decimal32", 4),
+        ("Decimal64", 8),
+        ("Decimal128", 16),
+        ("Decimal256", 32),
+        ("Enum8", 1),
+        ("Enum16", 2),
+        ("DateTime", 4),
+    ] {
+        if strip_wrap(name, family).is_some() {
+            return Some(width);
+        }
     }
-    if name.starts_with("LowCardinality(") || name.starts_with("Tuple(") || name.starts_with("Map(")
-    {
-        return None;
+    if let Some(inner) = strip_wrap(name, "FixedString") {
+        return inner
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|width| *width > 0);
     }
-    if name.starts_with("DateTime64(") {
-        return Some(8);
-    }
-    if name.starts_with("FixedString(") {
-        return first_int(name);
-    }
-    if name.starts_with("Decimal32(") {
-        return Some(4);
-    }
-    if name.starts_with("Decimal64(") {
-        return Some(8);
-    }
-    if name.starts_with("Decimal128(") {
-        return Some(16);
-    }
-    if name.starts_with("Decimal256(") {
-        return Some(32);
-    }
-    if name.starts_with("Decimal(") {
-        return first_int(name).and_then(decimal_width);
-    }
-    if name.starts_with("Enum8(") {
-        return Some(1);
-    }
-    if name.starts_with("Enum16(") {
-        return Some(2);
-    }
-    if name.starts_with("DateTime(") {
-        return Some(4);
+    if let Some(inner) = strip_wrap(name, "Decimal") {
+        return inner
+            .split_once(',')?
+            .0
+            .trim()
+            .parse()
+            .ok()
+            .and_then(decimal_width);
     }
     Some(match name {
         "UInt8" | "Int8" | "Bool" => 1,
         "UInt16" | "Int16" | "Date" => 2,
         "UInt32" | "Int32" | "Float32" | "Date32" | "IPv4" => 4,
-        "DateTime" => 4,
+        "DateTime" | "Time" => 4,
         "UInt64" | "Int64" | "Float64" => 8,
         "UInt128" | "Int128" | "UUID" | "IPv6" => 16,
         "UInt256" | "Int256" => 32,
@@ -114,18 +108,112 @@ pub(crate) fn fixed_width(type_name: &str) -> Option<usize> {
     })
 }
 
-fn strip_wrap<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
-    let rest = name.strip_prefix(prefix)?.strip_prefix('(')?;
-    rest.strip_suffix(')')
+pub(crate) fn strip_wrap<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = name
+        .trim()
+        .strip_prefix(prefix)?
+        .trim_start()
+        .strip_prefix('(')?;
+    rest.strip_suffix(')').map(str::trim)
 }
 
-fn first_int(text: &str) -> Option<usize> {
-    let start = text.find(|ch: char| ch.is_ascii_digit())?;
-    let digits = text[start..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    digits.parse().ok()
+/// Compare type tokens while retaining whitespace and escapes in quoted literals.
+pub(crate) fn same_type(left: &str, right: &str) -> bool {
+    fn next_token<'a>(text: &mut &'a str) -> Option<&'a str> {
+        *text = text.trim_start();
+        let input = *text;
+        let first = input.chars().next()?;
+        let end = if matches!(first, '\'' | '"' | '`') {
+            let mut escaped = false;
+            let mut end = input.len();
+            for (index, ch) in input.char_indices().skip(1) {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == first {
+                    end = index + ch.len_utf8();
+                    break;
+                }
+            }
+            end
+        } else if matches!(first, '(' | ')' | ',' | '=') {
+            first.len_utf8()
+        } else {
+            input
+                .char_indices()
+                .skip(1)
+                .find(|(_, ch)| {
+                    ch.is_whitespace() || matches!(ch, '(' | ')' | ',' | '=' | '\'' | '"' | '`')
+                })
+                .map_or(input.len(), |(index, _)| index)
+        };
+        *text = &input[end..];
+        Some(&input[..end])
+    }
+    let (mut left, mut right) = (left, right);
+    loop {
+        match (next_token(&mut left), next_token(&mut right)) {
+            (None, None) => return true,
+            (Some(left), Some(right)) if left == right => {}
+            _ => return false,
+        }
+    }
+}
+
+/// Native fixed-width column family, shared by row conversion and projections.
+#[cfg(feature = "tcp")]
+pub(crate) fn fixed_kind(type_name: &str) -> Option<crate::FixedKind> {
+    use crate::FixedKind as K;
+    let name = type_name.trim();
+    Some(match name {
+        "UInt8" => K::UInt8,
+        "UInt16" => K::UInt16,
+        "UInt32" => K::UInt32,
+        "UInt64" => K::UInt64,
+        "UInt128" => K::UInt128,
+        "Int8" => K::Int8,
+        "Int16" => K::Int16,
+        "Int32" => K::Int32,
+        "Int64" => K::Int64,
+        "Int128" => K::Int128,
+        "Float32" => K::Float32,
+        "Float64" => K::Float64,
+        "Bool" => K::Bool,
+        "Date" => K::Date,
+        "Date32" => K::Date32,
+        "DateTime" => K::DateTime,
+        "Time" => K::Time,
+        "UUID" => K::Uuid,
+        "IPv4" => K::Ipv4,
+        "IPv6" => K::Ipv6,
+        _ => {
+            for (family, kind) in [
+                ("DateTime64", K::DateTime64),
+                ("DateTime", K::DateTime),
+                ("Time64", K::Time64),
+                ("Enum8", K::Enum8),
+                ("Enum16", K::Enum16),
+                ("Decimal32", K::Decimal32),
+                ("Decimal64", K::Decimal64),
+                ("Decimal128", K::Decimal128),
+            ] {
+                if strip_wrap(name, family).is_some() {
+                    return Some(kind);
+                }
+            }
+            if strip_wrap(name, "Decimal").is_some() {
+                match fixed_width(name)? {
+                    4 => K::Decimal32,
+                    8 => K::Decimal64,
+                    16 => K::Decimal128,
+                    _ => return None,
+                }
+            } else {
+                return None;
+            }
+        }
+    })
 }
 
 fn decimal_width(precision: usize) -> Option<usize> {
@@ -139,5 +227,59 @@ fn decimal_width(precision: usize) -> Option<usize> {
         Some(16)
     } else {
         Some(32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parameter_whitespace_preserves_layout() {
+        assert_eq!(
+            layout(" Map ( String , Decimal ( 18 , 4 ) ) ").unwrap(),
+            Layout::Map("String", "Decimal ( 18 , 4 )")
+        );
+        for (name, width) in [
+            ("FixedString ( 12 )", 12),
+            ("Decimal ( 18 , 4 )", 8),
+            ("DateTime64 ( 6 , 'UTC' )", 8),
+            ("Time", 4),
+            ("Time64 ( 9 )", 8),
+        ] {
+            assert_eq!(fixed_width(name), Some(width), "{name}");
+        }
+        assert_eq!(fixed_width("FixedString ( 0 )"), None);
+        assert_eq!(fixed_width("Tuple ( UInt8 , UInt8 )"), None);
+    }
+
+    #[test]
+    fn type_equality_preserves_quoted_literals_and_word_boundaries() {
+        assert!(same_type(
+            "Map ( String , Decimal(18,4) )",
+            "Map(String,Decimal ( 18 , 4 ))"
+        ));
+        assert!(same_type(
+            "Tuple ( a UInt8 , b String )",
+            "Tuple(a UInt8,b String)"
+        ));
+        assert!(!same_type("Tuple(a UInt8)", "Tuple(aUInt8)"));
+        assert!(!same_type("DateTime('A B')", "DateTime('AB')"));
+        assert!(!same_type("UInt 8", "UInt8"));
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn fixed_kind_includes_native_scalar_families() {
+        assert_eq!(
+            fixed_kind("DateTime64 ( 6 )"),
+            Some(crate::FixedKind::DateTime64)
+        );
+        assert_eq!(
+            fixed_kind("Decimal ( 18 , 4 )"),
+            Some(crate::FixedKind::Decimal64)
+        );
+        assert_eq!(fixed_kind("Decimal(76,4)"), None);
+        assert_eq!(fixed_kind("Array(UInt8)"), None);
     }
 }

@@ -211,13 +211,18 @@ impl Block {
     }
     /// Copy a fixed-width column into aligned owned storage.
     /// # Errors
-    /// Duplicate names or inconsistent row counts reject insertion.
+    /// Mismatched element widths, duplicate names, or inconsistent row counts reject insertion.
     pub fn append_fixed_slice<T: IntoBytes + Immutable>(
         &mut self,
         name: impl Into<Cow<'static, str>>,
         type_name: &'static str,
         values: &[T],
     ) -> Result<()> {
+        if crate::type_layout::fixed_width(type_name) != Some(core::mem::size_of::<T>()) {
+            return Err(schema(
+                "fixed column type does not match Rust element width",
+            ));
+        }
         self.append_column(Column {
             name: name.into(),
             type_name: type_name.into(),

@@ -42,17 +42,17 @@ fn nullable_primitive_and_string_round_trip() {
     nullable.append_fixed(&[7_u32, 8]).expect("append values");
     nullable.append_null().expect("append null");
 
+    let nested = nullable.nested();
+    let nested = nested.as_ref().expect("nested");
+    let bytes = nested.fixed_bytes();
+    let values = <[u32]>::ref_from_bytes(bytes).expect("values");
+    assert_eq!(values, &[7, 8, 0]);
+
     let mut block = WireBlock::new().expect("block");
     block
         .append("n", WireColumn::Nullable(Box::new(nullable)))
         .expect("append nullable");
     assert_eq!(block.column_nulls("n").expect("nulls"), &[0, 0, 1]);
-    let handle = block.column_handle("n").expect("handle");
-    let nested = handle.as_ref().expect("handle").nested();
-    let nested = nested.as_ref().expect("nested");
-    let bytes = nested.fixed_bytes();
-    let values = <[u32]>::ref_from_bytes(bytes).expect("values");
-    assert_eq!(values, &[7, 8, 0]);
 
     let inner = WireColumn::string().expect("string inner");
     let mut nullable = NullableColumn::new(&inner).expect("nullable string");
@@ -74,17 +74,16 @@ fn array_offsets_and_values_round_trip() {
     let second = WireColumn::fixed(&[4_u32]).expect("second values");
     array.append_row(&second).expect("append second row");
 
+    let values = array.values();
+    let values = values.as_ref().expect("values handle");
+    let bytes = values.fixed_bytes();
+    let values = <[u32]>::ref_from_bytes(bytes).expect("values");
+    assert_eq!(values, &[1, 2, 3, 4]);
     let mut block = WireBlock::new().expect("block");
     block
         .append("a", WireColumn::Array(Box::new(array)))
         .expect("append array");
     assert_eq!(block.column_offsets("a").expect("offsets"), &[3, 4]);
-    let handle = block.column_handle("a").expect("array handle");
-    let values = handle.as_ref().expect("handle").nested();
-    let values = values.as_ref().expect("values handle");
-    let bytes = values.fixed_bytes();
-    let values = <[u32]>::ref_from_bytes(bytes).expect("values");
-    assert_eq!(values, &[1, 2, 3, 4]);
 }
 
 #[test]
@@ -99,6 +98,14 @@ fn tuple_children_round_trip() {
         .expect("tuple u32");
     tuple.append_str(1, "y").expect("tuple string");
 
+    let left = tuple.child(0).expect("left");
+    let right = tuple.child(1).expect("right");
+    assert_eq!(
+        <[u32]>::ref_from_bytes(left.as_ref().expect("left").fixed_bytes()).expect("left"),
+        &[7, 8]
+    );
+    assert_eq!(right.as_ref().expect("right").string_at(0), b"x");
+    assert_eq!(right.as_ref().expect("right").string_at(1), b"y");
     let mut block = WireBlock::new().expect("block");
     block
         .append("t", WireColumn::Tuple(tuple))
@@ -109,16 +116,6 @@ fn tuple_children_round_trip() {
             .expect("tuple type")
             .starts_with("Tuple(")
     );
-    let handle = block.column_handle("t").expect("tuple handle");
-    let handle = handle.as_ref().expect("handle");
-    let left = handle.tuple_at(0);
-    let right = handle.tuple_at(1);
-    assert_eq!(
-        <[u32]>::ref_from_bytes(left.as_ref().expect("left").fixed_bytes()).expect("left"),
-        &[7, 8]
-    );
-    assert_eq!(right.as_ref().expect("right").string_at(0), b"x");
-    assert_eq!(right.as_ref().expect("right").string_at(1), b"y");
 }
 
 #[test]

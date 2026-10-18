@@ -62,7 +62,7 @@ impl NativeClient {
     pub fn insert(&mut self, table: &str, block: &WireBlock) -> WireResult<()> {
         self.handle
             .pin_mut()
-            .insert(table, block.wire_handle())
+            .insert(table, block.wire_handle()?)
             .map_err(WireError::from)
     }
 
