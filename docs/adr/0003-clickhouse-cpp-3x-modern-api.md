@@ -1,0 +1,3 @@
+# Enforce `clickhouse-cpp` 3.x Modern API (`CH_USE_3X_API=ON`)
+
+`clickhouse-cpp` defaults to legacy 2.x compatibility flags (`CH_MAP_BOOL_TO_UINT8=ON`, `CH_USE_ABSEIL_FOR_BIGNUM=ON`, `CH_NON_OPTIONAL_CURRENT_ENDPOINT=OFF`). In `clickhouse-sys`, we explicitly compile `clickhouse-cpp` with `-DCH_USE_3X_API=ON` and drop legacy 2.x compatibility. This gives `Bool` a distinct column type, eliminates `absl::int128`/`uint128` wrapper friction so 128-bit integers (`Int128`, `UInt128`, `UUID`, `Decimal128`) match Rust's native `i128`/`u128` memory layout for direct `zerocopy` slice casting, and simplifies endpoint state inspection.
