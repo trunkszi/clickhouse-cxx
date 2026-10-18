@@ -1,5 +1,7 @@
 //! Variable-length String, FixedString, and JSON columns.
 
+use std::marker::PhantomData;
+
 use clickhouse_sys as sys;
 use cxx::UniquePtr;
 
@@ -8,6 +10,7 @@ use crate::wire_error::{WireError, WireResult};
 /// A String or JSON column; both store variable-length UTF-8 payloads.
 pub struct StringColumn {
     handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl StringColumn {
@@ -32,6 +35,7 @@ impl StringColumn {
     fn from_name(name: &str) -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_column(name)?,
+            _not_send: PhantomData,
         })
     }
 
@@ -120,6 +124,7 @@ impl StringColumn {
 pub struct FixedStringColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     width: usize,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl FixedStringColumn {
@@ -131,7 +136,11 @@ impl FixedStringColumn {
     pub fn new(width: usize) -> WireResult<Self> {
         let name = format!("FixedString({width})");
         let handle = sys::new_column(&name)?;
-        Ok(Self { handle, width })
+        Ok(Self {
+            handle,
+            width,
+            _not_send: PhantomData,
+        })
     }
 
     /// Append one value; shorter values are zero-padded to the fixed width.

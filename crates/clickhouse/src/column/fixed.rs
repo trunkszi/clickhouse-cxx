@@ -1,5 +1,7 @@
 //! Fixed-width column families and their zero-copy projections.
 
+use std::marker::PhantomData;
+
 use clickhouse_sys as sys;
 use cxx::UniquePtr;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
@@ -351,6 +353,7 @@ fixed_newtype!(
 pub struct FixedWireColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     kind: FixedKind,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl FixedWireColumn {
@@ -367,7 +370,11 @@ impl FixedWireColumn {
                 "type name '{type_name}' did not produce {kind:?} (got {actual:?})"
             )));
         }
-        Ok(Self { handle, kind })
+        Ok(Self {
+            handle,
+            kind,
+            _not_send: PhantomData,
+        })
     }
 
     /// Create an empty column from a Rust fixed-width type.

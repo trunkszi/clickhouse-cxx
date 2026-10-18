@@ -1,5 +1,7 @@
 //! Native transport blocks with zero-copy fixed-width projections.
 
+use std::marker::PhantomData;
+
 use cxx::{SharedPtr, UniquePtr};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
@@ -65,6 +67,8 @@ macro_rules! push_column {
 pub struct NativeBlock {
     inner: UniquePtr<sys::ffi::Block>,
     rows: usize,
+    /// The block owns C++ columns that must stay on one thread.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl NativeBlock {
@@ -73,12 +77,17 @@ impl NativeBlock {
         Self {
             inner: sys::ffi::block_new(),
             rows: 0,
+            _not_send: PhantomData,
         }
     }
 
     pub(crate) fn from_inner(inner: UniquePtr<sys::ffi::Block>) -> Self {
         let rows = sys::ffi::block_rows(&inner);
-        Self { inner, rows }
+        Self {
+            inner,
+            rows,
+            _not_send: PhantomData,
+        }
     }
 
     pub(crate) fn inner(&self) -> &sys::ffi::Block {

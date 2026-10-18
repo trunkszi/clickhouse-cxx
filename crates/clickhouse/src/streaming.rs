@@ -1,5 +1,7 @@
 //! Exclusive RAII sessions; cleanup runs synchronously under the configured timeout.
 
+use std::marker::PhantomData;
+
 use clickhouse_sys::ffi;
 
 use crate::{
@@ -12,6 +14,7 @@ pub struct BlockStream<'a> {
     pub(crate) client: &'a mut Client,
     pub(crate) query: Query<'a>,
     pub(crate) active: bool,
+    pub(crate) _not_send: PhantomData<*const ()>,
 }
 
 impl BlockStream<'_> {
@@ -94,6 +97,7 @@ pub struct Inserter<'a> {
     pub(crate) client: &'a mut Client,
     pub(crate) schema: NativeBlock,
     pub(crate) active: bool,
+    pub(crate) _not_send: PhantomData<*const ()>,
 }
 
 impl Inserter<'_> {

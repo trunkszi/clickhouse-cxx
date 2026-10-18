@@ -1,5 +1,7 @@
 //! Minimal synchronous Native TCP client used by the column round-trip tests.
 
+use std::marker::PhantomData;
+
 use clickhouse_sys as sys;
 use cxx::UniquePtr;
 
@@ -14,7 +16,8 @@ use crate::{
 /// It cannot be sent to another thread or shared across threads.
 pub struct NativeClient {
     handle: UniquePtr<sys::ClientHandle>,
-    thread_bound: std::marker::PhantomData<*const ()>,
+    /// The native client and its blocks are single-threaded.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl NativeClient {
@@ -26,7 +29,7 @@ impl NativeClient {
     pub fn connect(host: &str, port: u16) -> WireResult<Self> {
         Ok(Self {
             handle: sys::new_client(host, port).map_err(WireError::from)?,
-            thread_bound: std::marker::PhantomData,
+            _not_send: PhantomData,
         })
     }
 
