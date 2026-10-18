@@ -1,5 +1,6 @@
 //! Shared contracts used by the row derive macro.
 mod client;
+mod cpp_bridge;
 mod field;
 mod native;
 mod owned;

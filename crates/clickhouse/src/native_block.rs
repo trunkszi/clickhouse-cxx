@@ -1,9 +1,9 @@
 //! Native transport blocks with zero-copy fixed-width projections.
 
-use cxx::UniquePtr;
+use cxx::{SharedPtr, UniquePtr};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
-use crate::{error::Error, sys};
+use crate::{CppColumn, error::Error, sys};
 
 const KIND_U8: u32 = 1;
 const KIND_U16: u32 = 2;
@@ -240,6 +240,36 @@ impl NativeBlock {
             self.rows = offsets.len();
         }
         Ok(())
+    }
+
+    /// Append a column from the 17-family C++ matrix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Block`] when the row count conflicts with an earlier
+    /// column, the column has no C++ handle, or the native append fails.
+    pub fn push_cpp_column(&mut self, name: &str, column: &CppColumn) -> Result<(), Error> {
+        if self.rows != 0 && self.rows != column.len() {
+            return Err(Error::block(format!(
+                "column `{name}` has {} rows, expected {}",
+                column.len(),
+                self.rows
+            )));
+        }
+        let handle = column.cpp_handle().ok_or_else(|| {
+            Error::block(format!("column `{name}` has no native C++ representation"))
+        })?;
+        sys::ffi::block_append_column_handle(self.inner.pin_mut(), name, handle)
+            .map_err(|error| Error::block(format!("append column `{name}`: {error}")))?;
+        if self.rows == 0 {
+            self.rows = column.len();
+        }
+        Ok(())
+    }
+
+    /// Borrow one native column as a matrix handle.
+    pub(crate) fn cpp_column(&self, index: usize) -> SharedPtr<sys::ColumnHandle> {
+        sys::ffi::block_column_handle(&self.inner, index)
     }
 
     /// Drop all rows while keeping allocated column capacity.
