@@ -92,11 +92,17 @@ fn decimal_precision(type_name: &str) -> u32 {
 }
 
 /// Map a concrete decimal type name to its fixed-width kind.
+///
+/// Unparsable names report precision zero, so `Decimal256(...)` and malformed
+/// names fall through to `None` instead of being classified as `Decimal32`.
 pub fn decimal_kind(type_name: &str) -> Option<FixedKind> {
     if !type_name.starts_with("Decimal") {
         return None;
     }
     let precision = decimal_precision(type_name);
+    if precision == 0 || precision > 38 {
+        return None;
+    }
     if precision <= 9 {
         Some(FixedKind::Decimal32)
     } else if precision <= 18 {
@@ -568,5 +574,34 @@ impl FixedWireColumn {
         self.handle
             .as_ref()
             .ok_or_else(|| WireError::Unsupported("fixed column handle is null".to_owned()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FixedKind, decimal_kind};
+
+    #[test]
+    fn decimal_kind_classifies_supported_precision_bands() {
+        assert_eq!(decimal_kind("Decimal(9,0)"), Some(FixedKind::Decimal32));
+        assert_eq!(decimal_kind("Decimal(38,2)"), Some(FixedKind::Decimal128));
+        assert_eq!(decimal_kind("Decimal64(2)"), Some(FixedKind::Decimal64));
+    }
+
+    #[test]
+    fn decimal_kind_rejects_unparsable_or_oversized_precision() {
+        assert_eq!(decimal_kind("Decimal(50,2)"), None);
+        assert_eq!(decimal_kind("Decimal(0,0)"), None);
+        assert_eq!(decimal_kind("Decimal256(8)"), None);
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn bool_item_bytes_reads_stable_storage() {
+        let handle = crate::sys::new_column("Bool").expect("Bool column");
+        let column = handle.as_ref().expect("Bool column handle");
+        column.append_fixed(&[1, 0]).expect("append Bool values");
+        assert_eq!(column.item_bytes(0), [1]);
+        assert_eq!(column.item_bytes(1), [0]);
     }
 }

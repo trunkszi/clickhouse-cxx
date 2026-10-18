@@ -315,6 +315,14 @@ rust::Slice<const uint8_t> ColumnHandle::fixed_bytes() const {
 
 rust::Slice<const uint8_t> ColumnHandle::item_bytes(std::size_t index) const {
     try {
+        // ColumnBool::GetItem builds an ItemView from a bool temporary, so
+        // AsBinaryData() would point at a destroyed stack value. Answer from
+        // static storage instead.
+        if (auto bool_column = column_->As<clickhouse::ColumnBool>()) {
+            static const std::uint8_t kZero = 0;
+            static const std::uint8_t kOne = 1;
+            return rust::Slice<const uint8_t>(bool_column->At(index) ? &kOne : &kZero, 1);
+        }
         const auto view = column_->GetItem(index).AsBinaryData();
         return rust::Slice<const uint8_t>(
             reinterpret_cast<const uint8_t*>(view.data()), view.size());

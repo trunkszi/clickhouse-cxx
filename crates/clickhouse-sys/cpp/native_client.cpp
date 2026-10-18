@@ -50,12 +50,9 @@ clickhouse::ClientOptions client_options(const NativeOpen& opts) {
     if (opts.extra_hosts.size() != opts.extra_ports.size()) {
         throw std::runtime_error("fatal: extra endpoint hosts and ports differ in length");
     }
-    clickhouse::ClientOptions options;
-    options.SetHost(std::string(opts.host));
-    options.SetPort(opts.port);
-    options.SetUser(std::string(opts.user));
-    options.SetPassword(std::string(opts.password));
-    options.SetDefaultDatabase(std::string(opts.database));
+    clickhouse::ClientOptions options = chcxx::base_client_options(
+        std::string(opts.host), opts.port, std::string(opts.user),
+        std::string(opts.password), std::string(opts.database));
     options.SetSendRetries(opts.send_retries);
     options.SetRetryTimeout(std::chrono::seconds(opts.retry_timeout_secs));
     options.SetPingBeforeQuery(opts.ping_before_query);
@@ -67,11 +64,12 @@ clickhouse::ClientOptions client_options(const NativeOpen& opts) {
     options.SetTcpKeepAliveIdle(std::chrono::seconds(opts.keepalive_idle_secs));
     options.SetTcpKeepAliveInterval(std::chrono::seconds(opts.keepalive_interval_secs));
     options.SetTcpKeepAliveCount(opts.keepalive_count);
-    switch (opts.compression) {
-    case 0: options.SetCompressionMethod(clickhouse::CompressionMethod::None); break;
-    case 1: options.SetCompressionMethod(clickhouse::CompressionMethod::LZ4); break;
-    case 2: options.SetCompressionMethod(clickhouse::CompressionMethod::ZSTD); break;
-    default: throw std::runtime_error("fatal: unknown block compression method");
+    try {
+        chcxx::apply_compression(options, opts.compression);
+    } catch (const std::exception& error) {
+        // The managed dialer classifies failures by the "fatal:" prefix; an
+        // unknown compression tag is a programming error, not a retriable dial.
+        throw std::runtime_error(std::string("fatal: ") + error.what());
     }
 
     std::vector<clickhouse::Endpoint> extras;

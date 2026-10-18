@@ -11,19 +11,14 @@ namespace chcxx {
 
 Client::Client(rust::Str host, uint16_t port, rust::Str user, rust::Str password,
                rust::Str database, std::uint8_t compression, std::uint64_t timeout_ms) {
-    clickhouse::ClientOptions options;
-    options.SetHost(std::string(host)).SetPort(port).SetUser(std::string(user))
-        .SetPassword(std::string(password)).SetDefaultDatabase(std::string(database))
-        .SetRethrowException(true)
+    clickhouse::ClientOptions options = base_client_options(
+        std::string(host), port, std::string(user), std::string(password),
+        std::string(database));
+    options.SetRethrowException(true)
         .SetConnectionConnectTimeout(std::chrono::milliseconds(timeout_ms))
         .SetConnectionRecvTimeout(std::chrono::milliseconds(timeout_ms))
         .SetConnectionSendTimeout(std::chrono::milliseconds(timeout_ms));
-    switch (compression) {
-    case 0: options.SetCompressionMethod(clickhouse::CompressionMethod::None); break;
-    case 1: options.SetCompressionMethod(clickhouse::CompressionMethod::LZ4); break;
-    case 2: options.SetCompressionMethod(clickhouse::CompressionMethod::ZSTD); break;
-    default: throw std::invalid_argument("unknown block compression method");
-    }
+    apply_compression(options, compression);
     inner_ = std::make_unique<clickhouse::Client>(options);
 }
 
@@ -84,17 +79,24 @@ EventScope::~EventScope() {
 }
 
 void install_events(Client& client, NativeQuery& query, std::uint8_t mask) {
+    // OnProgress/OnProfile cannot signal cancellation by returning a value, so
+    // a rejected event must unwind through the client; swallowing it would
+    // keep transferring rows after the Rust callback asked to stop.
     if (mask & 1) query.value.OnProgress([&client](const clickhouse::Progress& progress) {
         NativeEvent event;
         event.kind = 1;
         event.progress = progress;
-        client.emit(event);
+        if (!client.emit(event)) {
+            throw std::runtime_error("query cancelled by progress callback");
+        }
     });
     if (mask & 2) query.value.OnProfile([&client](const clickhouse::Profile& profile) {
         NativeEvent event;
         event.kind = 2;
         event.profile = profile;
-        client.emit(event);
+        if (!client.emit(event)) {
+            throw std::runtime_error("query cancelled by profile callback");
+        }
     });
     if (mask & 4) query.value.OnProfileEvents([&client](const clickhouse::Block& block) {
         NativeEvent event;
@@ -153,7 +155,9 @@ void end_insert(Client& client) { client.inner().EndInsert(); }
 bool is_inserting(const Client& client) { return client.inner().IsInserting(); }
 
 void add_external(Client& client, rust::Str name, const Block& block) {
-    client.external.push_back({std::string_view(name.data(), name.size()), block.inner()});
+    client.external_names.emplace_back(name.data(), name.size());
+    const std::string& owned = client.external_names.back();
+    client.external.push_back({std::string_view(owned.data(), owned.size()), block.inner()});
 }
 
 void select_external(Client& client, NativeQuery& query, std::uint8_t mask,
@@ -169,7 +173,10 @@ void select_external(Client& client, NativeQuery& query, std::uint8_t mask,
     client.inner().SelectWithExternalData(query.value, client.external);
 }
 
-void clear_external(Client& client) { client.external.clear(); }
+void clear_external(Client& client) {
+    client.external.clear();
+    client.external_names.clear();
+}
 
 ServerInfo get_server_info(const Client& client) {
     const auto& info = client.inner().GetServerInfo();
