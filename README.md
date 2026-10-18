@@ -37,6 +37,26 @@ A general-purpose, purely synchronous, high-performance ClickHouse client SDK fo
 
 ---
 
+## Examples & Tutorials
+
+The examples under `crates/clickhouse/examples/` form a progressive, runnable tutorial. Every example runs offline by default. Examples that include a live-server section read `CLICKHOUSE_URL` (for example `tcp://127.0.0.1:9000`) and optionally `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE`.
+
+| Example | What it teaches |
+| :--- | :--- |
+| `01_quickstart_native_tcp` | Build a row-layer `Block` and a C++ `CppBlock`, inspect their schema, project `&[u64]` and `&[f64]` without copying, and optionally round-trip through the Native TCP `Client`. |
+| `02_derive_row_and_zero_copy_views` | `#[derive(Row)]` attributes (`table`, `rename_all`, `rename`, `bytes`), borrowed `Cow` fields, `Option`, `Vec`, and `BTreeMap`, plus the generated `Batch`, `BlockView`, and `Ref` types. |
+| `03_memory_policy_and_batch_reuse` | `.clear()` capacity retention, steady-state zero-allocation refills, burst trimming with `shrink_to_fit`, and a small `BufferPolicy` teaching model. |
+| `04_full_column_type_matrix` | The complete column-family tour: numeric, Bool, String/FixedString/JSON, date/time, decimals, UUID, IP, enums, Nullable, Array, LowCardinality, Tuple, Map, Geo, and Nothing. |
+| `05_dual_transport_and_row_client` | The typed `RowClient` surface (`insert_batch`, `insert_rows`, `query_rows`, `query_views`) over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map bridge columns. |
+
+```bash
+cargo run -p clickhouse --example 01_quickstart_native_tcp
+cargo run -p clickhouse --example 02_derive_row_and_zero_copy_views
+cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
+cargo run -p clickhouse --example 04_full_column_type_matrix
+cargo run -p clickhouse --example 05_dual_transport_and_row_client
+```
+
 ## Documentation
 
 - [`GLOSSARY.md`](./GLOSSARY.md): Ubiquitous domain language and core type definitions.
