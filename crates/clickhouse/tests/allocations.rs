@@ -1,15 +1,22 @@
 //! Integration coverage for allocation-free projections and warmed batch appends.
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    cell::Cell,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 use clickhouse::Row;
 struct Counter;
-static ENABLED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // Count allocations only on the test thread that enabled measurement.
+    static ENABLED: Cell<bool> = const { Cell::new(false) };
+}
+fn enabled() -> bool {
+    ENABLED.try_with(Cell::get).unwrap_or(false)
+}
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 // Allocation-sensitive tests share one counting switch, so they must not run concurrently.
 static ALLOCATION_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -20,7 +27,7 @@ unsafe impl GlobalAlloc for Counter {
     /// # Safety
     /// The caller supplies a valid allocation layout.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if ENABLED.load(Ordering::Relaxed) {
+        if enabled() {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: Forward the caller's unchanged valid layout.
@@ -35,7 +42,7 @@ unsafe impl GlobalAlloc for Counter {
     /// # Safety
     /// The pointer/layout identify a live allocation and the size is valid.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        if ENABLED.load(Ordering::Relaxed) {
+        if enabled() {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: The caller's live allocation and new size pass through unchanged.
@@ -65,14 +72,14 @@ fn warmed_borrowed_paths_do_not_allocate() {
     let block = batch.to_block().unwrap();
     batch.clear();
     ALLOCATIONS.store(0, Ordering::Relaxed);
-    ENABLED.store(true, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(true));
     let view = RecordBlockView::try_from_block(&block).unwrap();
     let mut sum = 0;
     for row in view.iter() {
         sum += row.id;
         batch.push_ref(row);
     }
-    ENABLED.store(false, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
     assert_eq!(sum, 7);
     assert_eq!(batch.len(), 1);
@@ -105,12 +112,12 @@ fn integration_burst_trim_and_warm_refill() {
     assert!(warm <= clickhouse::BufferPolicy::default().max_retained_bytes);
     assert!(batch.id.capacity() >= 4096);
     ALLOCATIONS.store(0, Ordering::Relaxed);
-    ENABLED.store(true, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(true));
     batch.clear();
     for _ in 0..4096 {
         batch.push_ref(value);
     }
-    ENABLED.store(false, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
     assert_eq!(batch.allocated_bytes(), warm);
     assert_eq!(batch.len(), 4096);
@@ -140,10 +147,10 @@ fn integration_block_refill_reuses_capacity() {
     let mut target = batch.to_block().unwrap();
     let bytes = target.allocated_bytes();
     ALLOCATIONS.store(0, Ordering::Relaxed);
-    ENABLED.store(true, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(true));
     target.clear();
     target.refill_from(&source).unwrap();
-    ENABLED.store(false, Ordering::Relaxed);
+    ENABLED.with(|flag| flag.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
     assert_eq!(target.allocated_bytes(), bytes);
     assert_eq!(

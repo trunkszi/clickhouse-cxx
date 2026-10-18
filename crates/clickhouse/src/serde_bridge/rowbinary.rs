@@ -7,8 +7,8 @@
 use std::borrow::Cow;
 
 use serde::{
-    de::{DeserializeSeed, Deserializer, SeqAccess, Visitor},
-    ser::{Serialize, SerializeSeq, SerializeStruct, Serializer},
+    de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor},
+    ser::{Serialize, SerializeMap, SerializeSeq, SerializeStruct, Serializer},
 };
 
 use super::{
@@ -227,8 +227,13 @@ impl Serializer for &mut Writer<'_> {
         Err(SerError::custom("enum variant is not a RowBinary value"))
     }
 
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self, SerError> {
-        Err(SerError::custom("map is not a RowBinary value"))
+    fn serialize_map(self, len: Option<usize>) -> Result<Self, SerError> {
+        let len = len.ok_or_else(|| SerError::custom("map length is required"))?;
+        write_varu64(
+            self.out,
+            u64::try_from(len).map_err(|_| SerError::custom("map length overflows u64"))?,
+        );
+        Ok(self)
     }
 
     fn serialize_struct(self, name: &'static str, _len: usize) -> Result<Self, SerError> {
@@ -313,20 +318,20 @@ impl serde::ser::SerializeTupleVariant for &mut Writer<'_> {
     }
 }
 
-impl serde::ser::SerializeMap for &mut Writer<'_> {
+impl SerializeMap for &mut Writer<'_> {
     type Ok = ();
     type Error = SerError;
 
-    fn serialize_key<T: ?Sized + Serialize>(&mut self, _key: &T) -> Result<(), SerError> {
-        Err(SerError::custom("map is not a RowBinary value"))
+    fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), SerError> {
+        key.serialize(&mut **self)
     }
 
-    fn serialize_value<T: ?Sized + Serialize>(&mut self, _value: &T) -> Result<(), SerError> {
-        Err(SerError::custom("map is not a RowBinary value"))
+    fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), SerError> {
+        value.serialize(&mut **self)
     }
 
     fn end(self) -> Result<(), SerError> {
-        Err(SerError::custom("map is not a RowBinary value"))
+        Ok(())
     }
 }
 
@@ -549,8 +554,13 @@ impl<'de> Deserializer<'de> for &mut Decoder<'de> {
         ))
     }
 
-    fn deserialize_map<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, SerError> {
-        Err(SerError::custom("map is not a RowBinary value"))
+    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
+        let left = read_len(&mut self.input)?;
+        visitor.visit_map(CountedMap {
+            de: self,
+            left,
+            key_pending: false,
+        })
     }
 
     fn deserialize_struct<V: Visitor<'de>>(
@@ -624,5 +634,42 @@ impl<'de> SeqAccess<'de> for OpenSeq<'_, 'de> {
         seed: T,
     ) -> Result<Option<T::Value>, SerError> {
         seed.deserialize(&mut *self.de).map(Some)
+    }
+}
+
+struct CountedMap<'a, 'de> {
+    de: &'a mut Decoder<'de>,
+    left: usize,
+    key_pending: bool,
+}
+
+impl<'de> MapAccess<'de> for CountedMap<'_, 'de> {
+    type Error = SerError;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, SerError> {
+        if self.left == 0 {
+            return Ok(None);
+        }
+        if self.key_pending {
+            return Err(SerError::custom("map value is missing"));
+        }
+        self.key_pending = true;
+        seed.deserialize(&mut *self.de).map(Some)
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, SerError> {
+        if !self.key_pending {
+            return Err(SerError::custom("map value has no preceding key"));
+        }
+        self.key_pending = false;
+        self.left -= 1;
+        seed.deserialize(&mut *self.de)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.left)
     }
 }

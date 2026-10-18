@@ -53,7 +53,7 @@ server; examples with a live section read `CLICKHOUSE_URL` (for example
 | `03_memory_policy_and_batch_reuse` | `clickhouse::BufferPolicy` (`default`, `unbounded`, `minimal`), aggregate `allocated_bytes()`, `clear_with_policy()`, and value-preserving `shrink_to_fit()`. |
 | `04_full_column_type_matrix` | All column families from numeric and Bool through Nullable, Array, Tuple, Map, Geo, JSON, and Nothing. |
 | `05_dual_transport_and_row_client` | `RowClient` over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map rows. |
-| `06_serde_compatibility` | `SerdeBridge` RowBinary and `Block` conversion for serde-only structs, `insert_serde`/`query_serde`, and serde naming/bytes attributes in `#[derive(Row)]`. |
+| `06_serde_compatibility` | `SerdeBridge` RowBinary and `Block` conversion for serde-only structs including `BTreeMap` fields, `insert_serde`/`query_serde`, and serde naming/bytes attributes in `#[derive(Row)]`. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -75,10 +75,13 @@ cargo run -p clickhouse --example 06_serde_compatibility
   back into owned values.
 - `SerdeBridge::rows_to_block(&rows)` builds the row-layer `Block` by
   dispatching serde fields into typed ClickHouse columns. `Option` becomes
-  `Nullable`, `Vec` becomes `Array`, and `serde_bytes` payloads become binary
-  `String` columns.
+  `Nullable`, `Vec` becomes `Array`, `BTreeMap`/`HashMap` become `Map(K, V)`,
+  and `serde_bytes` payloads become binary `String` columns.
 - `SerdeBridge::block_to_rows(&block)` materializes rows from a block by
-  matching column names to serde field names.
+  matching column names to serde field names. Logical fixed columns (`Date`,
+  `Date32`, `DateTime`, `DateTime64`, `IPv4`, `Decimal32/64/128`) decode into
+  their underlying integer width, and `UUID`/`IPv6` decode into a
+  `serde_bytes` byte field.
 
 `RowClient` exposes the same bridge as `insert_serde(table, &rows)` and
 `query_serde::<T>(sql)`, so an in-memory transport and the Native TCP `Client`
