@@ -247,6 +247,10 @@ impl ArrayColumn {
     pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
         self.handle.as_ref().expect("Array column handle")
     }
+
+    pub(super) fn nested(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
+        self.handle.as_ref().map(|handle| handle.nested())
+    }
 }
 
 /// A LowCardinality wrapper.
@@ -415,6 +419,10 @@ impl TupleColumn {
         self.handle
             .as_ref()
             .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    pub(super) fn handle(&self) -> Option<&sys::ColumnHandle> {
+        self.handle.as_ref()
     }
 
     pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {

@@ -90,13 +90,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tuple = TupleColumn::new(&["UInt32", "String"])?;
     tuple.append_fixed(0, &7_u32.to_le_bytes())?;
     tuple.append_str(1, "tuple")?;
-    let left = tuple.child(0).expect("tuple child 0");
-    let right = tuple.child(1).expect("tuple child 1");
-    println!(
-        "  tuple_child_0_bytes={:?} tuple_child_1={:?}",
-        left.as_ref().expect("tuple child 0").fixed_bytes(),
-        right.as_ref().expect("tuple child 1").string_at(0)
-    );
+    let left = tuple.child_fixed_bytes(0).expect("tuple child 0");
+    let right = tuple.child_string_at(1, 0).expect("tuple child 1");
+    println!("  tuple_child_0_bytes={left:?} tuple_child_1={right:?}");
 
     block.append("tup", WireColumn::Tuple(tuple))?;
 
