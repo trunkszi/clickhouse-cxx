@@ -40,7 +40,7 @@ A general-purpose, purely synchronous, high-performance ClickHouse client SDK fo
 
 ## Examples & Tutorials
 
-The examples under `crates/clickhouse/examples/` form a progressive, runnable tutorial. Every example runs offline by default. Examples that include a live-server section read `CLICKHOUSE_URL` (for example `tcp://127.0.0.1:9000`) and optionally `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE`.
+The examples under `crates/clickhouse/examples/` form a progressive, runnable tutorial. Every example runs offline by default. Native TCP examples with a live-server section read `CLICKHOUSE_URL` (for example `tcp://127.0.0.1:9000`) and optionally `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, and `CLICKHOUSE_DATABASE`.
 
 | Example | What it teaches |
 | :--- | :--- |
@@ -50,6 +50,7 @@ The examples under `crates/clickhouse/examples/` form a progressive, runnable tu
 | `04_full_column_type_matrix` | The complete column-family tour: numeric, Bool, String/FixedString/JSON, date/time, decimals, UUID, IP, enums, Nullable, Array, LowCardinality, Tuple, Map, Geo, and Nothing. |
 | `05_dual_transport_and_row_client` | The typed `RowClient` surface (`insert_batch`, `insert_rows`, `query_rows`, `query_views`) over an in-memory transport and Native TCP, including Bool/Array/Nullable/Map bridge columns. |
 | `06_serde_compatibility` | `SerdeBridge` for `serde`-only structs (RowBinary and `Block` conversion, including `BTreeMap` map columns), `RowClient::insert_serde`/`query_serde` over an in-memory transport and Native TCP, and `#[serde(rename_all)]`, `#[serde(rename)]`, and `#[serde(with = "serde_bytes")]` support in `#[derive(Row)]`. |
+| [08_tls_and_failover_policy](crates/clickhouse/examples/08_tls_and_failover_policy.rs) | Verified Native TCPS trust and SNI, four endpoint policies, local observers, circuit/health diagnostics, and explicit reconnect without replaying writes. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -58,7 +59,12 @@ cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
 cargo run -p clickhouse --example 06_serde_compatibility
+cargo run -p clickhouse --example 08_tls_and_failover_policy
 ```
+
+The TLS example reads `CLICKHOUSE_TCPS_URLS` for its optional live section,
+with `CLICKHOUSE_CA_PEM` and `CLICKHOUSE_TLS_SNI` for custom trust and identity.
+It runs without network access when no TCPS endpoint list is supplied.
 
 ## Serde Compatibility
 
