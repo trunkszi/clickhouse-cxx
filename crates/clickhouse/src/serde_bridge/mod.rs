@@ -4,6 +4,9 @@
 //! written and read without `#[derive(Row)]`. RowBinary is a positional wire
 //! format; block conversion uses serde field names as column names.
 
+pub(crate) mod column_buffer;
+mod fingerprint;
+pub use fingerprint::{deduplication_token, fingerprint_block, fnv1a64};
 mod block_read;
 mod block_write;
 mod rowbinary;
@@ -102,8 +105,8 @@ impl SerdeBridge {
     ///
     /// Field names become column names. `Option<T>` becomes `Nullable(T)` and
     /// `Vec<T>` becomes `Array(T)`; byte strings share `String` storage.
-    /// Fields that only ever hold `None` or empty sequences have no element
-    /// type to infer, so they fall back to `Nullable(String)` or `Array(String)`.
+    /// Fields containing only nulls or empty collections lack an inferable leaf
+    /// type and are rejected instead of inventing a storage schema.
     ///
     /// # Errors
     ///
@@ -174,6 +177,22 @@ impl SerdeBridge {
         dst: &mut [T],
     ) -> Result<usize, Error> {
         block_read::block_to_rows_into_slice(block, dst)
+    }
+    /// Hash arbitrary bytes with FNV-1a.
+    pub fn fnv1a64(bytes: &[u8]) -> u64 {
+        fnv1a64(bytes)
+    }
+    /// Fingerprint the canonical HTTP Native block encoding.
+    /// # Errors
+    /// Invalid storage or unsupported types reject encoding.
+    pub fn fingerprint_block(block: &Block) -> Result<u64, Error> {
+        fingerprint_block(block)
+    }
+    /// Return a hexadecimal insert deduplication token.
+    /// # Errors
+    /// Invalid storage or unsupported types reject encoding.
+    pub fn deduplication_token(block: &Block) -> Result<String, Error> {
+        deduplication_token(block)
     }
 }
 

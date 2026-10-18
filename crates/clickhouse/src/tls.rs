@@ -188,6 +188,7 @@ impl<'a> TlsSettings<'a> {
         self.keepalive_count
     }
 
+    #[cfg(feature = "tcp")]
     pub(crate) fn timeout_ms(duration: Duration) -> u64 {
         u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
     }

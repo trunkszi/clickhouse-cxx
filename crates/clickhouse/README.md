@@ -286,8 +286,9 @@ probe after the cooldown. Writes are never replayed automatically.
 | `04_full_column_type_matrix` | All 17 column families, including wrappers, Geo, JSON, and Nothing. |
 | `05_dual_transport_and_row_client` | One `RowClient` surface over an in-memory transport and Native TCP. |
 | `06_serde_compatibility` | RowBinary and Block conversion, maps, logical types, and serde attributes. |
-| `07_streaming_and_callbacks` | Reserved walkthrough for streaming and caller-buffer APIs exercised by examples 02 and 06. |
+| `07_thread_local_and_workers` | Thread-local clients and caller-thread worker slot leasing without transferring client handles. |
 | `08_tls_and_failover_policy` | Native TCPS trust, four endpoint policies, observers, and circuit diagnostics. |
+| `09_http2_rowbinary_and_arrow` | HTTP protocol selection, RowBinary rows, Arrow projections, and caller-owned response buffers. |
 
 ```bash
 cargo run -p clickhouse --example 01_quickstart_native_tcp
@@ -296,7 +297,9 @@ cargo run -p clickhouse --example 03_memory_policy_and_batch_reuse
 cargo run -p clickhouse --example 04_full_column_type_matrix
 cargo run -p clickhouse --example 05_dual_transport_and_row_client
 cargo run -p clickhouse --example 06_serde_compatibility
+cargo run -p clickhouse --example 07_thread_local_and_workers
 cargo run -p clickhouse --example 08_tls_and_failover_policy
+cargo run -p clickhouse --features http --example 09_http2_rowbinary_and_arrow
 ```
 
 Examples run without a server. Live sections read `CLICKHOUSE_URL`,

@@ -361,12 +361,16 @@ impl Arena {
         Ok(())
     }
 
-    /// Turn placeholder-only columns into empty strings so every row has a value.
+    /// Reject placeholder-only leaves whose storage types cannot be inferred.
     pub(super) fn resolve(&mut self, index: usize) -> Result<(), SerError> {
         let action = match &self.nodes[index].kind {
             Kind::Nullable { inner, .. } | Kind::Array { inner, .. } => Action::One(*inner),
             Kind::Map { keys, values, .. } => Action::Pair(*keys, *values),
-            Kind::Unknown { pending } => Action::Fallback(*pending),
+            Kind::Unknown { .. } => {
+                return Err(SerError::custom(
+                    "cannot infer a column type from only nulls or empty collections",
+                ));
+            }
             Kind::Fixed { .. } | Kind::String { .. } => Action::Done,
         };
         match action {
@@ -374,13 +378,6 @@ impl Arena {
             Action::Pair(keys, values) => {
                 self.resolve(keys)?;
                 self.resolve(values)
-            }
-            Action::Fallback(pending) => {
-                self.nodes[index].kind = Kind::String {
-                    offsets: Vec::new(),
-                    bytes: Vec::new(),
-                };
-                self.flush_pending(index, pending)
             }
             Action::Done => Ok(()),
         }
@@ -525,6 +522,5 @@ enum Placeholder {
 enum Action {
     One(usize),
     Pair(usize, usize),
-    Fallback(usize),
     Done,
 }

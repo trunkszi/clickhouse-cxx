@@ -1,6 +1,8 @@
 //! Compile-time integration contracts for thread-confined client state.
 
-use clickhouse::{Client, ClientConfig, Endpoint, FailoverPolicy, NativeClient, sys::TlsSession};
+use clickhouse::{Client, ClientConfig, Endpoint, FailoverPolicy};
+#[cfg(feature = "tcp")]
+use clickhouse::{NativeClient, sys::TlsSession};
 
 trait AmbiguousSend<A> {
     fn verify() {}
@@ -24,9 +26,11 @@ fn integration_client_state_is_thread_confined() {
         };
     }
     assert_thread_confined!(Client);
+    #[cfg(feature = "tcp")]
     assert_thread_confined!(NativeClient);
     assert_thread_confined!(Endpoint);
     assert_thread_confined!(FailoverPolicy);
     assert_thread_confined!(ClientConfig<'static>);
+    #[cfg(feature = "tcp")]
     assert_thread_confined!(TlsSession);
 }

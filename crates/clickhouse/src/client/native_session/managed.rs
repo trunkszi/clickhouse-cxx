@@ -3,8 +3,9 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher, time::Instant};
 
 use clickhouse_sys::NativeOptions;
 
+use super::NativeSession;
 use crate::{
-    Client, ClientConfig, CompressionMethod, Endpoint, EndpointHealth, EndpointSelection, Error,
+    ClientConfig, CompressionMethod, Endpoint, EndpointHealth, EndpointSelection, Error,
     FailoverEvent, FailoverPolicy, Scheme, TlsSettings, config::FailoverCallback, sys,
 };
 pub(super) struct Managed {
@@ -18,7 +19,7 @@ pub(super) struct Managed {
     needs_probe: bool,
     callback_error: Option<Error>,
 }
-impl Client {
+impl NativeSession {
     /// Open a Native session using configured failover and certificate trust.
     /// # Errors
     /// Returns the last connection failure when no available endpoint connects.

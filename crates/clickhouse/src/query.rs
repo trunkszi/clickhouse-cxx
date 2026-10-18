@@ -2,7 +2,33 @@
 
 use std::{borrow::Cow, collections::BTreeMap, marker::PhantomData};
 
+#[cfg(feature = "tcp")]
 use crate::NativeBlock;
+
+/// HTTP body compression negotiated with `Content-Encoding` and `Accept-Encoding`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Compression {
+    /// Send and receive uncompressed bytes.
+    #[default]
+    None,
+    /// LZ4 frame compression.
+    Lz4,
+    /// Zstd frame compression.
+    Zstd,
+}
+
+/// Which HTTP version the curl transport asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpVersionChoice {
+    /// Cleartext HTTP/2 prior knowledge, with multiplexing.
+    Http2PriorKnowledge,
+    /// HTTP/2 when the scheme is HTTPS.
+    Http2Tls,
+    /// HTTP/1.1 for peers that do not speak HTTP/2.
+    Http1,
+    /// Prefer HTTP/2 and allow an HTTP/1.1 response.
+    Negotiate,
+}
 
 /// Reject a query when the server does not recognize the setting.
 pub const IMPORTANT: u64 = 0x01;
@@ -117,6 +143,7 @@ pub struct ServerInfo {
 }
 
 /// An in-memory named table borrowed for one query execution.
+#[cfg(feature = "tcp")]
 pub struct ExternalTable<'a> {
     /// Name referenced by SQL; it is not interpolated into the SQL text.
     pub name: Cow<'a, str>,
@@ -125,6 +152,7 @@ pub struct ExternalTable<'a> {
 }
 
 type ValueHandler<'a, T> = Box<dyn FnMut(T) + 'a>;
+#[cfg(feature = "tcp")]
 type BlockHandler<'a> = Box<dyn FnMut(&NativeBlock) + 'a>;
 type ExceptionHandler<'a> = Box<dyn FnMut(&ServerException) + 'a>;
 
@@ -145,15 +173,20 @@ pub struct Query<'a> {
     pub tracing_context: Option<TracingContext<'a>>,
     pub(crate) on_progress: Option<ValueHandler<'a, Progress>>,
     pub(crate) on_profile: Option<ValueHandler<'a, Profile>>,
+    #[cfg(feature = "tcp")]
     pub(crate) on_profile_events: Option<BlockHandler<'a>>,
+    #[cfg(feature = "tcp")]
     pub(crate) on_server_log: Option<BlockHandler<'a>>,
     pub(crate) on_exception: Option<ExceptionHandler<'a>>,
+    pub(crate) deduplication_token: Option<Cow<'a, str>>,
+    pub(crate) compression: Option<Compression>,
     /// Callbacks run on the thread that advances the query; the request is not Send.
     _not_send: PhantomData<*const ()>,
 }
 
 impl<'a> Query<'a> {
     /// Narrow the borrowing interval to one synchronous operation.
+    #[cfg(feature = "tcp")]
     pub(crate) fn shorten<'b>(self) -> Query<'b>
     where
         'a: 'b,
@@ -171,9 +204,13 @@ impl<'a> Query<'a> {
             tracing_context: None,
             on_progress: None,
             on_profile: None,
+            #[cfg(feature = "tcp")]
             on_profile_events: None,
+            #[cfg(feature = "tcp")]
             on_server_log: None,
             on_exception: None,
+            deduplication_token: None,
+            compression: None,
             _not_send: PhantomData,
         }
     }
@@ -236,12 +273,14 @@ impl<'a> Query<'a> {
     }
 
     /// Receive profile event tables without projecting or copying their columns.
+    #[cfg(feature = "tcp")]
     pub fn on_profile_events(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
         self.on_profile_events = Some(Box::new(callback));
         self
     }
 
     /// Receive structured server log tables.
+    #[cfg(feature = "tcp")]
     pub fn on_server_log(mut self, callback: impl FnMut(&NativeBlock) + 'a) -> Self {
         self.on_server_log = Some(Box::new(callback));
         self
@@ -257,9 +296,50 @@ impl<'a> Query<'a> {
     pub fn has_event_callbacks(&self) -> bool {
         self.on_progress.is_some()
             || self.on_profile.is_some()
-            || self.on_profile_events.is_some()
-            || self.on_server_log.is_some()
+            || self.has_block_callbacks()
             || self.on_exception.is_some()
+    }
+    /// Borrow SQL without changing its ownership.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    /// Insert or replace an unflagged setting for either transport.
+    pub fn setting(self, key: impl Into<Cow<'a, str>>, value: impl Into<Cow<'a, str>>) -> Self {
+        self.with_setting(key, value, 0)
+    }
+
+    /// Select the HTTP insert deduplication token for one request.
+    pub fn deduplication_token(mut self, token: impl Into<Cow<'a, str>>) -> Self {
+        self.deduplication_token = Some(token.into());
+        self
+    }
+
+    /// Override HTTP body compression for one request.
+    pub fn compression(mut self, compression: Compression) -> Self {
+        self.compression = Some(compression);
+        self
+    }
+
+    pub(crate) fn settings(&self) -> &QuerySettings<'a> {
+        &self.settings
+    }
+    pub(crate) fn deduplication_token_value(&self) -> Option<&str> {
+        self.deduplication_token.as_deref()
+    }
+    pub(crate) fn compression_override(&self) -> Option<Compression> {
+        self.compression
+    }
+
+    fn has_block_callbacks(&self) -> bool {
+        #[cfg(feature = "tcp")]
+        {
+            self.on_profile_events.is_some() || self.on_server_log.is_some()
+        }
+        #[cfg(not(feature = "tcp"))]
+        {
+            false
+        }
     }
 }
 

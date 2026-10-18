@@ -275,7 +275,11 @@ impl<'de> Deserializer<'de> for ValueDe<'de> {
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_bool(self.fixed::<1>("Bool")?[0] != 0)
+        match self.fixed::<1>("Bool")?[0] {
+            0 => visitor.visit_bool(false),
+            1 => visitor.visit_bool(true),
+            _ => Err(SerError::custom("invalid Boolean value")),
+        }
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {

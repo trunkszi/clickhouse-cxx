@@ -5,13 +5,14 @@ use std::marker::PhantomData;
 use clickhouse_sys::ffi;
 
 use crate::{
-    Batch, Client, Error, NativeBlock, Query, Result,
+    Batch, Error, NativeBlock, Query, Result,
     callbacks::{self, Frame},
+    client::native_session::NativeSession,
 };
 
 /// An interactive query holding the client's unique borrow until exhaustion or Drop.
 pub struct BlockStream<'a> {
-    pub(crate) client: &'a mut Client,
+    pub(crate) client: &'a mut NativeSession,
     pub(crate) query: Query<'a>,
     pub(crate) active: bool,
     pub(crate) _not_send: PhantomData<*const ()>,
@@ -94,7 +95,7 @@ impl Drop for BlockStream<'_> {
 
 /// A single INSERT session accepting any number of schema-compatible blocks.
 pub struct Inserter<'a> {
-    pub(crate) client: &'a mut Client,
+    pub(crate) client: &'a mut NativeSession,
     pub(crate) schema: NativeBlock,
     pub(crate) active: bool,
     pub(crate) _not_send: PhantomData<*const ()>,

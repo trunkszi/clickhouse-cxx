@@ -64,6 +64,9 @@ where
             in_row: false,
         };
         let row = T::deserialize(&mut decoder)?;
+        if decoder.input.len() >= input.len() {
+            return Err(Error::serde("row deserializer consumed no bytes"));
+        }
         input = decoder.input;
         on_row(row)?;
         count += 1;
@@ -100,6 +103,9 @@ pub(crate) fn from_rowbinary_into_slice<T: serde::de::DeserializeOwned>(
             in_row: false,
         };
         let row = T::deserialize(&mut decoder)?;
+        if decoder.input.len() >= input.len() {
+            return Err(Error::serde("row deserializer consumed no bytes"));
+        }
         input = decoder.input;
         // The slot is initialized by the caller; overwriting it drops the old
         // value and keeps the write path free of temporary storage.
@@ -476,7 +482,11 @@ impl<'de> Deserializer<'de> for &mut Decoder<'de> {
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
         let byte = self.array::<1>()?[0];
-        visitor.visit_bool(byte != 0)
+        match byte {
+            0 => visitor.visit_bool(false),
+            1 => visitor.visit_bool(true),
+            _ => Err(SerError::custom("invalid Boolean value")),
+        }
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
@@ -643,8 +653,8 @@ impl<'de> Deserializer<'de> for &mut Decoder<'de> {
         Err(SerError::custom("identifier is not a RowBinary value"))
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, SerError> {
-        visitor.visit_unit()
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, SerError> {
+        Err(SerError::custom("RowBinary cannot skip an untyped field"))
     }
 }
 
@@ -664,7 +674,12 @@ impl<'de> SeqAccess<'de> for CountedSeq<'_, 'de> {
             return Ok(None);
         }
         self.left -= 1;
-        seed.deserialize(&mut *self.de).map(Some)
+        let before = self.de.input.len();
+        let value = seed.deserialize(&mut *self.de)?;
+        if self.de.input.len() >= before {
+            return Err(SerError::custom("array element consumed no bytes"));
+        }
+        Ok(Some(value))
     }
 
     fn size_hint(&self) -> Option<usize> {

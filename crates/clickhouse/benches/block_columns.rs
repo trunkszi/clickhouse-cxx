@@ -11,6 +11,7 @@ struct Composite {
     values: Vec<u32>,
     map: BTreeMap<String, u64>,
 }
+#[cfg(feature = "tcp")]
 #[derive(Row)]
 struct Primitive {
     id: u64,
@@ -28,17 +29,6 @@ fn columns(c: &mut Criterion) {
     for _ in 0..4096 {
         batch.push(&source);
     }
-    let mut primitive = PrimitiveBatch::with_capacity(4096);
-    for id in 0..4096 {
-        primitive.push_ref(PrimitiveRef { id, text: "sample" });
-    }
-    let block = primitive.to_block().unwrap();
-    let native = block.to_native().unwrap();
-    let restored = clickhouse::Block::from_native(&native).unwrap();
-    assert_eq!(
-        restored.column_slice::<u64>(0).unwrap(),
-        block.column_slice::<u64>(0).unwrap()
-    );
     let mut group = c.benchmark_group("columns");
     group.throughput(Throughput::Elements(4096));
     group.bench_function("recursive_append_reuse", |b| {
@@ -62,12 +52,26 @@ fn columns(c: &mut Criterion) {
             black_box(reusable.allocated_bytes());
         })
     });
-    group.bench_function("native_roundtrip", |b| {
-        b.iter(|| {
-            let native = black_box(&block).to_native().unwrap();
-            black_box(clickhouse::Block::from_native(&native).unwrap());
-        })
-    });
+    #[cfg(feature = "tcp")]
+    {
+        let mut primitive = PrimitiveBatch::with_capacity(4096);
+        for id in 0..4096 {
+            primitive.push_ref(PrimitiveRef { id, text: "sample" });
+        }
+        let block = primitive.to_block().unwrap();
+        let native = block.to_native().unwrap();
+        let restored = clickhouse::Block::from_native(&native).unwrap();
+        assert_eq!(
+            restored.column_slice::<u64>(0).unwrap(),
+            block.column_slice::<u64>(0).unwrap()
+        );
+        group.bench_function("native_roundtrip", |b| {
+            b.iter(|| {
+                let native = black_box(&block).to_native().unwrap();
+                black_box(clickhouse::Block::from_native(&native).unwrap());
+            })
+        });
+    }
     group.finish();
 }
 criterion_group!(benches, columns);

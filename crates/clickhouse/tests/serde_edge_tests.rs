@@ -351,6 +351,7 @@ fn rows_with_changing_column_types_are_rejected() {
     assert!(SerdeBridge::to_rowbinary(&rows).is_ok());
 }
 
+#[cfg(feature = "tcp")]
 #[test]
 fn vec_option_blocks_are_rejected_by_the_native_edge() {
     #[derive(serde::Serialize)]

@@ -1,21 +1,29 @@
 //! Column storage: owned aligned buffers and the native column family.
 
+#[cfg(feature = "tcp")]
 mod composite;
 mod fixed;
+#[cfg(feature = "tcp")]
 mod variable;
+#[cfg(feature = "tcp")]
 mod wire;
 
 use std::borrow::Cow;
 
+#[cfg(feature = "tcp")]
 pub use composite::{
     ArrayColumn, Decimal256Column, GeoColumn, GeoKind, LowCardinalityColumn, MapColumn,
     NothingColumn, NullableColumn, TupleColumn,
 };
+#[cfg(feature = "tcp")]
+pub use fixed::FixedWireColumn;
 pub use fixed::{
     ChBool, Date, Date32, DateTime, DateTime64, Decimal32, Decimal64, Decimal128, Enum8, Enum16,
-    FixedKind, FixedType, FixedWireColumn, Ipv4, Ipv6, Time, Time64, Uuid, decimal_kind,
+    FixedKind, FixedType, Ipv4, Ipv6, Time, Time64, Uuid, decimal_kind,
 };
+#[cfg(feature = "tcp")]
 pub use variable::{FixedStringColumn, StringColumn};
+#[cfg(feature = "tcp")]
 pub use wire::{TypeCode, WireColumn};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 

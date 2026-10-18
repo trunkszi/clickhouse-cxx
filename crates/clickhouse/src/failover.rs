@@ -114,6 +114,7 @@ impl EndpointHealth {
             last_error: None,
         }
     }
+    #[cfg(feature = "tcp")]
     pub(crate) fn available(&self, now: Instant) -> bool {
         !self.circuit_open || self.retry_at.is_some_and(|deadline| now >= deadline)
     }

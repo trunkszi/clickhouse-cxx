@@ -1,6 +1,8 @@
 //! In-memory endpoint, block, and projection checks.
 
-use clickhouse::{Endpoint, Error, NativeBlock, Scheme};
+#[cfg(feature = "tcp")]
+use clickhouse::NativeBlock;
+use clickhouse::{Endpoint, Error, Scheme};
 
 #[test]
 fn endpoint_parses_host_and_port() {
@@ -17,8 +19,8 @@ fn endpoint_defaults_to_native_port() {
 }
 
 #[test]
-fn endpoint_rejects_non_tcp_scheme() {
-    let error = Endpoint::parse("http://localhost:8123").expect_err("scheme");
+fn endpoint_rejects_unknown_scheme() {
+    let error = Endpoint::parse("ftp://localhost:8123").expect_err("scheme");
     assert!(matches!(error, Error::UnsupportedScheme { .. }));
 }
 
@@ -34,6 +36,7 @@ fn endpoint_rejects_bad_port_and_path() {
     ));
 }
 
+#[cfg(feature = "tcp")]
 #[test]
 fn block_round_trips_primitive_and_string_columns() {
     let mut block = NativeBlock::new();
@@ -59,6 +62,7 @@ fn block_round_trips_primitive_and_string_columns() {
     assert_eq!(block.column_strings("symbol").expect("symbol"), symbols);
 }
 
+#[cfg(feature = "tcp")]
 #[test]
 fn block_clear_retains_capacity() {
     let mut block = NativeBlock::new();
@@ -74,6 +78,7 @@ fn block_clear_retains_capacity() {
     assert_eq!(block.column_slice::<u64>("id").expect("id"), [7, 8]);
 }
 
+#[cfg(feature = "tcp")]
 #[test]
 fn block_reports_missing_and_mismatched_columns() {
     let mut block = NativeBlock::new();

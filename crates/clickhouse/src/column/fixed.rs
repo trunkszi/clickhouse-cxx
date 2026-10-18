@@ -1,11 +1,15 @@
 //! Fixed-width column families and their zero-copy projections.
 
+#[cfg(feature = "tcp")]
 use std::marker::PhantomData;
 
+#[cfg(feature = "tcp")]
 use clickhouse_sys as sys;
+#[cfg(feature = "tcp")]
 use cxx::UniquePtr;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+#[cfg(feature = "tcp")]
 use crate::wire_error::{WireError, WireResult};
 
 /// Fixed-width ClickHouse column kinds.
@@ -104,6 +108,7 @@ pub fn decimal_kind(type_name: &str) -> Option<FixedKind> {
 
 impl FixedKind {
     /// Whether this kind matches a concrete column type code and name.
+    #[cfg(feature = "tcp")]
     pub fn matches(self, actual: super::TypeCode, type_name: &str) -> bool {
         match self {
             Self::Decimal32 => {
@@ -350,12 +355,14 @@ fixed_newtype!(
 );
 
 /// An owned fixed-width column.
+#[cfg(feature = "tcp")]
 pub struct FixedWireColumn {
     handle: UniquePtr<sys::ColumnHandle>,
     kind: FixedKind,
     _not_send: PhantomData<*const ()>,
 }
 
+#[cfg(feature = "tcp")]
 impl FixedWireColumn {
     /// Create an empty column with an explicit ClickHouse type name.
     ///
