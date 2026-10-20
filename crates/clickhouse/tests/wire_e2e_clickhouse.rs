@@ -552,7 +552,7 @@ fn native_round_trip_geo_and_low_cardinality_numeric() {
         "MultiPolygon"
     );
     let scalar = client
-        .select_one("SELECT toUInt64(lcu) AS value FROM t02_geo")
+        .select_one("SELECT CAST(lcu AS UInt64) AS value FROM t02_geo")
         .expect("select low cardinality value")
         .expect("scalar block");
     assert_eq!(scalar.column_to_vec::<u64>("value").expect("value"), [11]);

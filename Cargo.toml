@@ -66,3 +66,23 @@ manual_string_new = "deny"
 let_underscore_must_use = "deny"
 todo = "deny"
 unimplemented = "deny"
+
+# Dev profile: 关闭无用的完整 DWARF 调试段，关闭与 sccache 冲突的 incremental
+[profile.dev]
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
+[profile.test]
+inherits = "dev"
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false
