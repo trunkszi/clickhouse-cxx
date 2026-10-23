@@ -1,0 +1,742 @@
+//! Nullable, Array, LowCardinality, Tuple, Map, Geo, Nothing, and Decimal256 columns.
+
+use std::marker::PhantomData;
+
+use clickhouse_sys as sys;
+use cxx::{SharedPtr, UniquePtr};
+use zerocopy::IntoBytes;
+
+use super::{FixedType, WireColumn};
+use crate::wire_error::{WireError, WireResult};
+
+/// A Nullable wrapper around a nested column.
+pub struct NullableColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    nested_type: String,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl NullableColumn {
+    /// Create an empty Nullable column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(inner: &WireColumn) -> WireResult<Self> {
+        let nested_type = inner.type_name();
+        let name = format!("Nullable({nested_type})");
+        let handle = sys::new_column(&name)?;
+        Ok(Self {
+            handle,
+            nested_type,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append one null row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_null(&mut self) -> WireResult<()> {
+        self.handle
+            .pin_mut()
+            .nullable_append_default()
+            .map_err(WireError::from)?;
+        self.append_flag(true)
+    }
+
+    /// Append non-null fixed-width values through the exclusive parent handle.
+    /// # Errors
+    /// Invalid layouts or native append failures return an error.
+    pub fn append_fixed<T: FixedType>(&mut self, values: &[T]) -> WireResult<()> {
+        self.handle
+            .pin_mut()
+            .nullable_append_fixed(values.as_bytes())
+            .map_err(WireError::from)?;
+        for _ in values {
+            self.append_flag(false)?;
+        }
+        Ok(())
+    }
+
+    /// Append a non-null string through the exclusive parent handle.
+    /// # Errors
+    /// Incompatible types or native append failures return an error.
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
+        self.handle
+            .pin_mut()
+            .nullable_append_string(value.as_bytes())
+            .map_err(WireError::from)?;
+        self.append_flag(false)
+    }
+
+    fn append_flag(&mut self, is_null: bool) -> WireResult<()> {
+        self.handle
+            .pin_mut()
+            .append_nullable_flag(is_null)
+            .map_err(WireError::from)
+    }
+
+    /// Append a whole nested column through the exclusive parent handle.
+    /// # Errors
+    /// Missing native representations or native append failures return an error.
+    pub fn append_nested_column(&mut self, nested: &WireColumn) -> WireResult<()> {
+        let other = nested
+            .wire_handle()
+            .ok_or_else(|| WireError::Unsupported("nested column has no C++ handle".to_owned()))?;
+        self.handle
+            .pin_mut()
+            .nullable_append_column(other)
+            .map_err(WireError::from)
+    }
+
+    /// Append one null flag without changing the nested column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the nullable handle is missing or the native
+    /// append fails.
+    pub fn append_null_flag(&mut self, is_null: bool) -> WireResult<()> {
+        self.append_flag(is_null)
+    }
+
+    /// Nested column handle.
+    pub(crate) fn nested(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
+        self.handle.as_ref().map(|handle| handle.nested())
+    }
+
+    /// Null bitmap.
+    pub fn nulls(&self) -> &[u8] {
+        self.handle.as_ref().map_or(&[], |handle| handle.nulls())
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    /// Nested ClickHouse type name.
+    pub fn nested_type(&self) -> &str {
+        &self.nested_type
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Nullable column handle")
+    }
+}
+
+/// An Array wrapper around a nested column.
+pub struct ArrayColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    item_type: String,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl ArrayColumn {
+    /// Create an empty Array column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(item_type: &str) -> WireResult<Self> {
+        let name = format!("Array({item_type})");
+        let handle = sys::new_column(&name)?;
+        Ok(Self {
+            handle,
+            item_type: item_type.to_owned(),
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append one array row from a column containing the row's values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_row(&mut self, values: &WireColumn) -> WireResult<()> {
+        let values = values.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("cannot append Decimal256 to an Array".to_owned())
+        })?;
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Array column handle is null".to_owned()))?
+            .array_append_row(values)
+            .map_err(WireError::from)
+    }
+
+    /// Array offsets.
+    pub fn offsets(&self) -> &[u64] {
+        self.handle
+            .as_ref()
+            .map_or(&[], |handle| handle.array_offsets())
+    }
+
+    /// Number of array rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    /// Nested item type name.
+    pub fn item_type(&self) -> &str {
+        &self.item_type
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Array column handle")
+    }
+
+    pub(super) fn nested(&self) -> Option<SharedPtr<sys::ColumnHandle>> {
+        self.handle.as_ref().map(|handle| handle.nested())
+    }
+}
+
+/// A LowCardinality wrapper.
+pub struct LowCardinalityColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl LowCardinalityColumn {
+    /// Create an empty LowCardinality column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(inner_type: &str) -> WireResult<Self> {
+        let name = format!("LowCardinality({inner_type})");
+        Ok(Self {
+            handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append a string dictionary value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_str(&mut self, value: &str) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .low_cardinality_append_string(value.as_bytes())
+            .map_err(WireError::from)
+    }
+
+    /// Append a signed integer dictionary value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_i64(&mut self, value: i64) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .low_cardinality_append_i64(value)
+            .map_err(WireError::from)
+    }
+
+    /// Append an unsigned integer dictionary value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_u64(&mut self, value: u64) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("LowCardinality handle is null".to_owned()))?
+            .low_cardinality_append_u64(value)
+            .map_err(WireError::from)
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("LowCardinality column handle")
+    }
+}
+
+/// A Tuple column.
+pub struct TupleColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl TupleColumn {
+    /// Create an empty Tuple column from element type names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(element_types: &[&str]) -> WireResult<Self> {
+        if element_types.is_empty() {
+            return Err(WireError::Unsupported(
+                "empty Tuple is not supported".to_owned(),
+            ));
+        }
+        let name = format!("Tuple({})", element_types.join(", "));
+        Ok(Self {
+            handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Number of element columns.
+    pub fn tuple_len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.tuple_len())
+    }
+
+    /// Append fixed-width bytes to one element column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_fixed(&mut self, index: usize, bytes: &[u8]) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Tuple handle is null".to_owned()))?
+            .tuple_append_fixed(index, bytes)
+            .map_err(WireError::from)
+    }
+
+    /// Append a string to one element column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_str(&mut self, index: usize, value: &str) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Tuple handle is null".to_owned()))?
+            .tuple_append_string(index, value.as_bytes())
+            .map_err(WireError::from)
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    pub(super) fn handle(&self) -> Option<&sys::ColumnHandle> {
+        self.handle.as_ref()
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Tuple column handle")
+    }
+}
+
+/// A Map column.
+pub struct MapColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl MapColumn {
+    /// Create an empty Map column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(key_type: &str, value_type: &str) -> WireResult<Self> {
+        let name = format!("Map({key_type}, {value_type})");
+        Ok(Self {
+            handle: sys::new_column(&name)?,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append one map row from key and value columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_row(&mut self, keys: &WireColumn, values: &WireColumn) -> WireResult<()> {
+        let keys = keys.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("Decimal256 map keys are not supported".to_owned())
+        })?;
+        let values = values.wire_handle().ok_or_else(|| {
+            WireError::Unsupported("Decimal256 map values are not supported".to_owned())
+        })?;
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Map handle is null".to_owned()))?
+            .map_append_row(keys, values)
+            .map_err(WireError::from)
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Map column handle")
+    }
+}
+
+/// Supported Geo column kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeoKind {
+    /// Point.
+    Point,
+    /// Ring.
+    Ring,
+    /// Polygon.
+    Polygon,
+    /// MultiPolygon.
+    MultiPolygon,
+}
+
+impl GeoKind {
+    fn type_name(self) -> &'static str {
+        match self {
+            Self::Point => "Point",
+            Self::Ring => "Ring",
+            Self::Polygon => "Polygon",
+            Self::MultiPolygon => "MultiPolygon",
+        }
+    }
+}
+
+/// A Geo column.
+pub struct GeoColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    kind: GeoKind,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl GeoColumn {
+    /// Create a Geo column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new(kind: GeoKind) -> WireResult<Self> {
+        Ok(Self {
+            handle: sys::new_column(kind.type_name())?,
+            kind,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append one Point row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_point(&mut self, x: f64, y: f64) -> WireResult<()> {
+        if self.kind != GeoKind::Point {
+            return Err(WireError::Unsupported(
+                "append_point is only valid for Point columns".to_owned(),
+            ));
+        }
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Geo handle is null".to_owned()))?
+            .geo_append_point(x, y)
+            .map_err(WireError::from)
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    /// Geo kind.
+    pub fn kind(&self) -> GeoKind {
+        self.kind
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Geo column handle")
+    }
+}
+
+/// A Nothing column.
+pub struct NothingColumn {
+    handle: UniquePtr<sys::ColumnHandle>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl NothingColumn {
+    /// Create an empty Nothing column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn new() -> WireResult<Self> {
+        Ok(Self {
+            handle: sys::new_column("Void")?,
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Append one default row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying operation fails.
+    pub fn append_default(&mut self) -> WireResult<()> {
+        self.handle
+            .as_mut()
+            .ok_or_else(|| WireError::Unsupported("Nothing handle is null".to_owned()))?
+            .append_default()
+            .map_err(WireError::from)
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.handle.as_ref().map_or(0, |handle| handle.size())
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        if let Some(handle) = self.handle.as_mut() {
+            handle.clear();
+        }
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        self.handle
+            .as_ref()
+            .map_or_else(String::new, |handle| handle.type_name())
+    }
+
+    pub(crate) fn wire_handle_mut(&mut self) -> std::pin::Pin<&mut sys::ColumnHandle> {
+        self.handle.pin_mut()
+    }
+
+    pub(crate) fn wire_handle(&self) -> &sys::ColumnHandle {
+        self.handle.as_ref().expect("Nothing column handle")
+    }
+}
+
+/// Rust-side storage for Decimal256, which the native column layer does not expose.
+pub struct Decimal256Column {
+    scale: u32,
+    values: Vec<[u8; 32]>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Decimal256Column {
+    /// Create an empty Decimal256 column.
+    pub fn new(scale: u32) -> Self {
+        Self {
+            scale,
+            values: Vec::new(),
+            _not_send: PhantomData,
+        }
+    }
+
+    /// Append 32-byte two's-complement values.
+    pub fn append(&mut self, values: &[[u8; 32]]) {
+        self.values.extend_from_slice(values);
+    }
+
+    /// Borrow the stored values.
+    pub fn as_slice(&self) -> &[[u8; 32]] {
+        &self.values
+    }
+
+    /// Number of rows.
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Whether the column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Reset the column while retaining capacity.
+    pub fn clear(&mut self) {
+        self.values.clear();
+    }
+
+    /// ClickHouse type name.
+    pub fn type_name(&self) -> String {
+        format!("Decimal256({})", self.scale)
+    }
+
+    /// Decimal scale.
+    pub fn scale(&self) -> u32 {
+        self.scale
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LowCardinalityColumn;
+
+    #[test]
+    fn low_cardinality_int8_rejects_out_of_range_values() {
+        let mut column = LowCardinalityColumn::new("Int8").expect("Int8 dictionary");
+        assert!(column.append_i64(1000).is_err());
+        assert!(column.append_i64(127).is_ok());
+    }
+
+    #[test]
+    fn low_cardinality_uint8_rejects_out_of_range_values() {
+        let mut column = LowCardinalityColumn::new("UInt8").expect("UInt8 dictionary");
+        assert!(column.append_u64(256).is_err());
+        assert!(column.append_u64(255).is_ok());
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn low_cardinality_nullable_default_appends_null() {
+        let mut handle =
+            crate::sys::new_column("LowCardinality(Nullable(Int64))").expect("LC column");
+        handle.pin_mut().append_default().expect("nullable default");
+        assert_eq!(handle.size(), 1);
+    }
+}

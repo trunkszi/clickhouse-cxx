@@ -1,0 +1,124 @@
+[package]
+name = "clickhouse-cxx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Synchronous ClickHouse client with derived row batches and Native TCP transport"
+
+[lib]
+name = "clickhouse"
+bench = false
+
+[dependencies]
+nexora = { workspace = true, optional = true }
+lz4_flex = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+arrow-array = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-schema = { workspace = true }
+clickhouse-macros = { workspace = true }
+clickhouse-sys = { workspace = true, optional = true }
+cxx = { workspace = true, optional = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+zerocopy = { workspace = true }
+
+[features]
+default = ["tcp"]
+tcp = ["dep:clickhouse-sys", "dep:cxx"]
+http = ["dep:nexora", "dep:lz4_flex", "dep:zstd"]
+tracing = ["dep:tracing"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+sonic-rs = { workspace = true }
+rcgen = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
+serde_bytes = { workspace = true }
+
+[[bench]]
+name = "memory_retention_balance"
+harness = false
+
+[[bench]]
+name = "zero_copy_and_row_batch"
+harness = false
+
+[[bench]]
+name = "block_columns"
+harness = false
+
+[[test]]
+name = "column_fixed"
+required-features = ["tcp"]
+
+[[test]]
+name = "column_composite"
+required-features = ["tcp"]
+
+[[test]]
+name = "docker_native"
+required-features = ["tcp"]
+
+[[test]]
+name = "native_rows"
+required-features = ["tcp"]
+
+[[test]]
+name = "native_composite_rows"
+required-features = ["tcp"]
+
+[[test]]
+name = "tcps_failover_live"
+required-features = ["tcp"]
+
+[[test]]
+name = "wire_e2e_clickhouse"
+required-features = ["tcp"]
+
+
+[[test]]
+name = "http_mock"
+required-features = ["http"]
+
+[[test]]
+name = "live_server"
+required-features = ["http"]
+
+[[example]]
+name = "01_quickstart_native_tcp"
+required-features = ["tcp"]
+
+[[example]]
+name = "04_full_column_type_matrix"
+required-features = ["tcp"]
+
+[[test]]
+name = "single_threaded"
+required-features = ["tcp"]
+
+[[test]]
+name = "streaming_live"
+required-features = ["tcp"]
+
+[[test]]
+name = "thread_local_workers"
+required-features = ["tcp"]
+
+[[example]]
+name = "07_thread_local_and_workers"
+required-features = ["tcp"]
+
+[[example]]
+name = "08_tls_and_failover_policy"
+required-features = ["tcp"]
+
+[[example]]
+name = "09_http2_rowbinary_and_arrow"
+required-features = ["http"]

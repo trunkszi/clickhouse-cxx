@@ -1,0 +1,92 @@
+[workspace]
+members = [
+    "crates/clickhouse-sys",
+    "crates/clickhouse-macros",
+    "crates/clickhouse",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/trunkszi/clickhouse-cxx"
+
+[workspace.dependencies]
+liburing = { version = "0.0.1", package = "liburing-proactor" }
+cares = { version = "0.0.1" }
+libc = { version = "0.2" }
+sonic-rs = { version = "0.5.10" }
+nexora = { version = "0.0.1" }
+lz4_flex = { version = "0.11" }
+zstd = { version = "0.13" }
+arrow-array = { version = "60", default-features = false }
+arrow-ipc = { version = "60", default-features = false }
+arrow-schema = { version = "60", default-features = false }
+clickhouse-sys = { version = "0.0.1", path = "crates/clickhouse-sys" }
+clickhouse-macros = { version = "0.0.1", path = "crates/clickhouse-macros", package = "clickhouse-cxx-macros" }
+cmake = { version = "0.1" }
+rcgen = { version = "0.13" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = { version = "0.8" }
+rustls-pemfile = { version = "2" }
+socket2 = { version = "0.5", features = ["all"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+cxx = { version = "1.0" }
+cxx-build = { version = "1.0" }
+serde = { version = "1.0", features = ["derive"] }
+serde_bytes = { version = "0.11" }
+thiserror = { version = "2.0" }
+zerocopy = { version = "0.8", features = ["alloc", "derive"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = { version = "1" }
+proc-macro2 = { version = "1" }
+darling = { version = "0.21" }
+heck = { version = "0.5" }
+convert_case = { version = "0.8" }
+synstructure = { version = "0.13" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+clone_on_copy = "deny"
+redundant_clone = "deny"
+implicit_clone = "deny"
+unnecessary_to_owned = "deny"
+cloned_instead_of_copied = "deny"
+inefficient_to_string = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+expl_impl_clone_on_copy = "deny"
+non_canonical_clone_impl = "deny"
+useless_conversion = "deny"
+useless_asref = "deny"
+to_string_in_format_args = "deny"
+manual_string_new = "deny"
+let_underscore_must_use = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+# Dev profile: skip unused full DWARF debug info; incremental conflicts with sccache.
+[profile.dev]
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
+[profile.test]
+inherits = "dev"
+opt-level = 0
+debug = false
+strip = "debuginfo"
+incremental = false

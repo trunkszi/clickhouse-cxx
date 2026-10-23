@@ -1,0 +1,28 @@
+[package]
+name = "clickhouse-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "Static clickhouse-cpp bridge for the clickhouse-cxx workspace"
+
+[dependencies]
+liburing = { workspace = true }
+cares = { workspace = true }
+libc = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true }
+socket2 = { workspace = true }
+cxx = { workspace = true }
+
+[build-dependencies]
+cmake = { workspace = true }
+cxx-build = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+rcgen = { workspace = true }

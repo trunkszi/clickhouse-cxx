@@ -1,0 +1,6 @@
+/target
+/.scratch/
+.scratch/
+
+# Library workspaces resolve dependencies locally.
+/Cargo.lock

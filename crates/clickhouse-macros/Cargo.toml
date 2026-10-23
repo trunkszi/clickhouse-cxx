@@ -1,0 +1,21 @@
+[package]
+name = "clickhouse-cxx-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+description = "Procedural macros for typed ClickHouse rows and zero-copy batches in clickhouse-cxx"
+[lib]
+name = "clickhouse_macros"
+proc-macro = true
+[dependencies]
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+darling = { workspace = true }
+heck = { workspace = true }
+convert_case = { workspace = true }
+synstructure = { workspace = true }
+[lints]
+workspace = true
