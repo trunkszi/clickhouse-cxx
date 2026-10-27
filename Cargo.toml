@@ -46,6 +46,7 @@ darling = { version = "0.21" }
 heck = { version = "0.5" }
 convert_case = { version = "0.8" }
 synstructure = { version = "0.13" }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

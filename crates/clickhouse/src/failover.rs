@@ -15,6 +15,7 @@ pub enum EndpointSelection {
     Sticky,
 }
 /// Thread-bound retry and circuit-breaker settings. Query writes are never replayed.
+/// Dial masks at most 1024 endpoints and returns `Error::Config` above that.
 #[derive(Clone, Copy, Debug)]
 pub struct FailoverPolicy {
     pub(crate) selection: EndpointSelection,
@@ -83,7 +84,199 @@ impl FailoverPolicy {
         self.cooldown = cooldown;
         self
     }
+
+    /// Starting index for one dial. The caller walks the ring from here.
+    ///
+    /// Random selection advances `random_state` once and leaves a zero state at
+    /// zero. Round-robin uses `(current + rotate) % count`. Sticky keeps an
+    /// in-range `current` and folds an out-of-range `current` with modulo so
+    /// the ring walk is defined. Latency selection returns the configured index
+    /// of the first minimum eligible endpoint, or that folded current index
+    /// when none are eligible.
+    #[must_use]
+    pub fn select_index(
+        &self,
+        health: &[EndpointHealth],
+        current: usize,
+        now: Instant,
+        rotate: bool,
+        random_state: &mut u64,
+    ) -> Option<usize> {
+        let count = health.len();
+        if count == 0 {
+            return None;
+        }
+        let start = match self.selection {
+            EndpointSelection::Sticky => folded_index(current, count),
+            EndpointSelection::RoundRobin => current.wrapping_add(usize::from(rotate)) % count,
+            EndpointSelection::Random => (step_random(random_state) as usize) % count,
+            EndpointSelection::LatencyAware => latency_start(health, current, now),
+        };
+        Some(start)
+    }
 }
+
+fn folded_index(current: usize, count: usize) -> usize {
+    if current < count {
+        current
+    } else {
+        current % count
+    }
+}
+
+fn step_random(state: &mut u64) -> u64 {
+    let mut random = *state;
+    random ^= random << 13;
+    random ^= random >> 7;
+    random ^= random << 17;
+    *state = random;
+    random
+}
+
+fn latency_start(health: &[EndpointHealth], current: usize, now: Instant) -> usize {
+    let count = health.len();
+    health
+        .iter()
+        .enumerate()
+        .filter(|(_, endpoint)| endpoint.phase(now).is_eligible())
+        .min_by_key(|(_, endpoint)| endpoint.latency.unwrap_or(Duration::MAX))
+        .map(|(position, endpoint)| {
+            if endpoint.index < count {
+                endpoint.index
+            } else {
+                position
+            }
+        })
+        .unwrap_or_else(|| folded_index(current, count))
+}
+
+/// Endpoints that fit in the fixed eligibility snapshot.
+pub(crate) const ELIGIBILITY_LIMIT: usize = 1024;
+
+/// Eligibility frozen at one instant.
+///
+/// A cooldown that elapses after the snapshot stays excluded. The dial still
+/// skips an endpoint that was eligible here and later becomes unavailable.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EligibilityMask {
+    words: [u64; ELIGIBILITY_LIMIT / 64],
+    len: usize,
+}
+
+impl EligibilityMask {
+    pub(crate) fn snapshot(health: &[EndpointHealth], now: Instant) -> Option<Self> {
+        if health.len() > ELIGIBILITY_LIMIT {
+            return None;
+        }
+        let mut words = [0u64; ELIGIBILITY_LIMIT / 64];
+        for (index, endpoint) in health.iter().enumerate() {
+            if endpoint.phase(now).is_eligible() {
+                words[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        Some(Self {
+            words,
+            len: health.len(),
+        })
+    }
+
+    pub(crate) const fn contains(self, index: usize) -> bool {
+        if index >= self.len {
+            return false;
+        }
+        let bit = index % 64;
+        self.words[index / 64] & (1u64 << bit) != 0
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.words.iter().all(|word| *word == 0)
+    }
+}
+
+/// Ring order a dial walks, skipping endpoints absent from the snapshot.
+pub(crate) struct DialOrder {
+    start: usize,
+    count: usize,
+    offset: usize,
+    mask: EligibilityMask,
+}
+
+impl DialOrder {
+    pub(crate) const fn new(start: usize, mask: EligibilityMask) -> Self {
+        Self {
+            start,
+            count: mask.len,
+            offset: 0,
+            mask,
+        }
+    }
+}
+
+impl Iterator for DialOrder {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.count == 0 {
+            return None;
+        }
+        while self.offset < self.count {
+            let index = self.start.wrapping_add(self.offset) % self.count;
+            self.offset += 1;
+            if self.mask.contains(index) {
+                return Some(index);
+            }
+        }
+        None
+    }
+}
+/// Closed and half-open phases can accept a connection attempt.
+/// Open cooldown cannot.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CircuitSuperstate {
+    /// The endpoint may be dialed.
+    Eligible = 0,
+    /// The endpoint stays out of the candidate set.
+    Ineligible = 1,
+}
+
+/// Circuit health derived from [`EndpointHealth`] fields.
+///
+/// `Closed*` is only reported when `circuit_open` is false. `OpenCooldown`
+/// and `HalfOpenProbe` are only reported when `circuit_open` is true, so a
+/// closed circuit cannot be paired with an active cooldown.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CircuitPhase {
+    /// No outstanding failures and the last completed attempt succeeded.
+    ClosedHealthy = 0,
+    /// The circuit is closed, but the endpoint is not fully healthy.
+    ClosedDegraded = 1,
+    /// Cooldown has elapsed and one probe may run.
+    HalfOpenProbe = 2,
+    /// Consecutive failures are still inside the cooldown window.
+    OpenCooldown = 3,
+}
+
+impl CircuitPhase {
+    /// Parent state used by candidate selection.
+    #[must_use]
+    pub const fn superstate(self) -> CircuitSuperstate {
+        match self {
+            Self::ClosedHealthy | Self::ClosedDegraded | Self::HalfOpenProbe => {
+                CircuitSuperstate::Eligible
+            }
+            Self::OpenCooldown => CircuitSuperstate::Ineligible,
+        }
+    }
+
+    /// Whether dial may attempt this endpoint.
+    #[must_use]
+    pub const fn is_eligible(self) -> bool {
+        matches!(self.superstate(), CircuitSuperstate::Eligible)
+    }
+}
+
 /// Last measured endpoint health and circuit status.
 #[derive(Clone, Debug)]
 pub struct EndpointHealth {
@@ -114,9 +307,25 @@ impl EndpointHealth {
             last_error: None,
         }
     }
+    /// Project the circuit phase from the public health fields.
+    #[must_use]
+    pub fn phase(&self, now: Instant) -> CircuitPhase {
+        if self.circuit_open {
+            if self.retry_at.is_some_and(|deadline| now >= deadline) {
+                CircuitPhase::HalfOpenProbe
+            } else {
+                CircuitPhase::OpenCooldown
+            }
+        } else if self.healthy && self.failures == 0 {
+            CircuitPhase::ClosedHealthy
+        } else {
+            CircuitPhase::ClosedDegraded
+        }
+    }
+
     #[cfg(feature = "tcp")]
     pub(crate) fn available(&self, now: Instant) -> bool {
-        !self.circuit_open || self.retry_at.is_some_and(|deadline| now >= deadline)
+        self.phase(now).is_eligible()
     }
     /// Record a completed handshake without forgiving failed application operations.
     #[cfg(feature = "tcp")]
@@ -155,6 +364,147 @@ pub struct FailoverEvent<'a> {
     pub old_endpoint: std::borrow::Cow<'a, str>,
     /// Destination endpoint address.
     pub new_endpoint: std::borrow::Cow<'a, str>,
+}
+
+#[cfg(test)]
+mod selection {
+    use std::time::{Duration, Instant};
+
+    use super::{DialOrder, EligibilityMask, EndpointHealth, EndpointSelection, FailoverPolicy};
+
+    fn row(index: usize, eligible: bool, latency: Option<Duration>) -> EndpointHealth {
+        let now = Instant::now();
+        EndpointHealth {
+            index,
+            healthy: eligible,
+            failures: u32::from(!eligible),
+            latency,
+            circuit_open: !eligible,
+            retry_at: (!eligible).then(|| now + Duration::from_secs(60)),
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn select_start_matches_dial_rules() {
+        let now = Instant::now();
+        let health = vec![
+            row(0, true, Some(Duration::from_micros(40))),
+            row(1, false, Some(Duration::from_micros(1))),
+            row(2, true, Some(Duration::from_micros(10))),
+            row(3, true, Some(Duration::from_micros(25))),
+        ];
+        let mut state = 0u64;
+        let sticky = FailoverPolicy::new().with_selection(EndpointSelection::Sticky);
+        assert_eq!(
+            sticky.select_index(&health, 1, now, false, &mut state),
+            Some(1)
+        );
+        assert_eq!(
+            sticky.select_index(&health, 6, now, false, &mut state),
+            Some(2)
+        );
+        assert_eq!(state, 0);
+
+        let robin = FailoverPolicy::new().with_selection(EndpointSelection::RoundRobin);
+        assert_eq!(
+            robin.select_index(&health, 6, now, true, &mut state),
+            Some(3)
+        );
+        assert_eq!(
+            robin.select_index(&health, 6, now, false, &mut state),
+            Some(2)
+        );
+        assert_eq!(
+            robin.select_index(&health, 3, now, true, &mut state),
+            Some(0)
+        );
+
+        let random = FailoverPolicy::new().with_selection(EndpointSelection::Random);
+        let mut random_state = 0u64;
+        assert_eq!(
+            random.select_index(&health, 0, now, false, &mut random_state),
+            Some(0)
+        );
+        assert_eq!(random_state, 0);
+        random_state = 7;
+        let once = random.select_index(&health, 0, now, false, &mut random_state);
+        let mut manual = 7u64;
+        manual ^= manual << 13;
+        manual ^= manual >> 7;
+        manual ^= manual << 17;
+        assert_eq!(random_state, manual);
+        assert_eq!(once, Some((manual as usize) % health.len()));
+        let advanced = random_state;
+        assert!(
+            random
+                .select_index(&health, 0, now, false, &mut random_state)
+                .is_some()
+        );
+        assert_ne!(random_state, advanced);
+
+        let mut skewed = health.clone();
+        skewed[2].index = 3;
+        let latency = FailoverPolicy::new().with_selection(EndpointSelection::LatencyAware);
+        assert_eq!(
+            latency.select_index(&skewed, 0, now, false, &mut state),
+            Some(3)
+        );
+        skewed[2].index = 99;
+        assert_eq!(
+            latency.select_index(&skewed, 0, now, false, &mut state),
+            Some(2)
+        );
+        let closed: Vec<_> = (0..4).map(|index| row(index, false, None)).collect();
+        assert_eq!(
+            latency.select_index(&closed, 6, now, false, &mut state),
+            Some(2)
+        );
+        assert!(
+            sticky
+                .select_index(&[], 0, now, false, &mut state)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn snapshot_order_stays_frozen() {
+        let now = Instant::now();
+        let mut health = vec![
+            row(0, true, None),
+            row(1, false, None),
+            row(2, true, None),
+            row(3, true, None),
+        ];
+        let mask = EligibilityMask::snapshot(&health, now).expect("mask fits");
+        let mut state = 0u64;
+        let sticky_start = FailoverPolicy::new()
+            .with_selection(EndpointSelection::Sticky)
+            .select_index(&health, 1, now, false, &mut state)
+            .expect("start");
+        assert_eq!(sticky_start, 1);
+        assert!(!mask.contains(sticky_start));
+        let order: Vec<_> = DialOrder::new(sticky_start, mask).collect();
+        assert_eq!(order, vec![2, 3, 0]);
+
+        health[1].circuit_open = true;
+        health[1].retry_at = Some(now);
+        assert!(health[1].phase(now).is_eligible());
+        assert!(!mask.contains(1));
+        let frozen: Vec<_> = DialOrder::new(sticky_start, mask).collect();
+        assert_eq!(frozen, vec![2, 3, 0]);
+
+        health[2].circuit_open = true;
+        health[2].retry_at = Some(now + Duration::from_secs(30));
+        assert!(mask.contains(2));
+        let live: Vec<_> = DialOrder::new(0, mask)
+            .filter(|index| health[*index].phase(now).is_eligible())
+            .collect();
+        assert_eq!(live, vec![0, 3]);
+
+        let wide = vec![EndpointHealth::new(0); super::ELIGIBILITY_LIMIT + 1];
+        assert!(EligibilityMask::snapshot(&wide, now).is_none());
+    }
 }
 
 #[cfg(all(test, feature = "tcp"))]

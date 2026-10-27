@@ -5,9 +5,14 @@ use clickhouse_sys::NativeOptions;
 
 use super::NativeSession;
 use crate::{
-    ClientConfig, CompressionMethod, Endpoint, EndpointHealth, EndpointSelection, Error,
-    FailoverEvent, FailoverPolicy, Scheme, TlsSettings, config::FailoverCallback, sys,
+    ClientConfig, CompressionMethod, Endpoint, EndpointHealth, Error, FailoverEvent,
+    FailoverPolicy, Scheme, TlsSettings,
+    config::FailoverCallback,
+    failover::{DialOrder, EligibilityMask},
+    sys,
 };
+/// Active endpoints and circuit health. Dial masks at most 1024 endpoints (`Error::Config` above
+/// that).
 pub(super) struct Managed {
     pub endpoints: Vec<Endpoint>,
     pub current: usize,
@@ -187,33 +192,27 @@ impl NativeSession {
 }
 impl Managed {
     pub(super) fn dial(&mut self, rotate: bool) -> Result<cxx::UniquePtr<sys::ffi::Client>, Error> {
-        let count = self.endpoints.len();
-        let mut candidates: Vec<_> = (0..count)
-            .filter(|&i| self.health[i].available(Instant::now()))
-            .collect();
-        if candidates.is_empty() {
+        // One sample freezes the candidate set. A cooldown that elapses during
+        // this dial does not add an endpoint; a failure that opens a circuit
+        // is still skipped by the live check inside the walk.
+        let now = Instant::now();
+        let Some(mask) = EligibilityMask::snapshot(&self.health, now) else {
+            return Err(Error::Config {
+                reason: "endpoint count exceeds the failover eligibility mask".into(),
+            });
+        };
+        if mask.is_empty() {
             return Err(Error::native("all endpoint circuits are open"));
         }
-        let start = match self.policy.selection {
-            EndpointSelection::Sticky => self.current,
-            EndpointSelection::RoundRobin => (self.current + usize::from(rotate)) % count,
-            EndpointSelection::Random => {
-                self.random ^= self.random << 13;
-                self.random ^= self.random >> 7;
-                self.random ^= self.random << 17;
-                (self.random as usize) % count
-            }
-            EndpointSelection::LatencyAware => self
-                .health
-                .iter()
-                .filter(|h| h.available(Instant::now()))
-                .min_by_key(|h| h.latency.unwrap_or(std::time::Duration::MAX))
-                .map_or(self.current, |h| h.index),
+        let Some(start) =
+            self.policy
+                .select_index(&self.health, self.current, now, rotate, &mut self.random)
+        else {
+            return Err(Error::native("all endpoint circuits are open"));
         };
-        candidates.sort_by_key(|&index| (index + count - start) % count);
         let mut last = Error::native("no endpoint connected");
         for pass in 0..self.policy.retries.max(1) {
-            for &index in &candidates {
+            for index in DialOrder::new(start, mask) {
                 if !self.health[index].available(Instant::now()) {
                     continue;
                 }

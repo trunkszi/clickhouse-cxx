@@ -36,7 +36,7 @@ tracing = ["dep:tracing"]
 workspace = true
 
 [dev-dependencies]
-sonic-rs = { workspace = true }
+criterion = { workspace = true }
 rcgen = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
