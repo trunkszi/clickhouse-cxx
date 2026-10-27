@@ -1,5 +1,18 @@
 //! Explicitly finalized inserts with owned encoded staging buffers.
 use crate::{Block, Client, Error, Result, native_format::encode_block};
+
+/// Whether a staged HTTP insert is empty or holding bytes.
+///
+/// `end` is the only send. This phase does not flush.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InserterPhase {
+    /// No encoded bytes are staged.
+    Idle = 0,
+    /// One or more blocks are staged and waiting for `end`.
+    Buffering = 1,
+}
+
 /// Stages Native-format blocks; only `end` sends data to the server.
 /// Dropping an unfinished inserter discards its staged bytes without insertion.
 pub struct HttpInserter<'a> {
@@ -15,6 +28,16 @@ impl<'a> HttpInserter<'a> {
             table: table.to_owned(),
             bytes: Vec::new(),
             schema: None,
+        }
+    }
+
+    /// `Idle` when nothing is staged, otherwise `Buffering`.
+    #[must_use]
+    pub fn phase(&self) -> InserterPhase {
+        if self.bytes.is_empty() {
+            InserterPhase::Idle
+        } else {
+            InserterPhase::Buffering
         }
     }
     /// Stage one nonempty block without sending a request.
@@ -55,5 +78,28 @@ impl<'a> HttpInserter<'a> {
             &self.bytes,
             self.schema.as_deref().unwrap_or(&[]),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HttpInserter, InserterPhase};
+    use crate::{Block, Client, Endpoint};
+
+    #[test]
+    fn phase_follows_staged_bytes() {
+        let endpoint = Endpoint::parse("http://127.0.0.1:1").expect("http endpoint");
+        let mut client = Client::connect(endpoint, "default", "", "default").expect("http client");
+        let mut staged = HttpInserter::new(&mut client, "events");
+        assert_eq!(staged.phase(), InserterPhase::Idle);
+        staged.write(&Block::new()).expect("empty block");
+        assert_eq!(staged.phase(), InserterPhase::Idle);
+
+        let mut block = Block::new();
+        block
+            .append_fixed_slice("id", "UInt64", &[7u64])
+            .expect("one row");
+        staged.write(&block).expect("stage one row");
+        assert_eq!(staged.phase(), InserterPhase::Buffering);
     }
 }

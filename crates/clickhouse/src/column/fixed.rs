@@ -528,10 +528,19 @@ impl FixedWireColumn {
                 element_size: size,
             });
         }
-        let mut values = Vec::with_capacity(bytes.len() / size);
-        for chunk in bytes.chunks_exact(size) {
-            let value = T::read_from_bytes(chunk).map_err(|_| WireError::Alignment)?;
-            values.push(value);
+        let count = bytes.len() / size;
+        let mut values = Vec::<T>::with_capacity(count);
+        // SAFETY: `count * size_of::<T>() == bytes.len()`. `T: FromBytes`, so
+        // every byte pattern of that width is a valid `T`. The destination is
+        // the `Vec` allocation, aligned for `T`. The source may be unaligned,
+        // so the copy is addressed as bytes. The two ranges do not overlap.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                values.as_mut_ptr().cast::<u8>(),
+                bytes.len(),
+            );
+            values.set_len(count);
         }
         Ok(values)
     }
