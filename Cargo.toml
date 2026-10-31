@@ -13,11 +13,11 @@ license = "Apache-2.0"
 repository = "https://github.com/trunkszi/clickhouse-cxx"
 
 [workspace.dependencies]
-liburing = { version = "0.0.1", package = "liburing-proactor" }
-cares = { version = "0.0.1" }
+liburing = { git = "https://github.com/trunkszi/liburing-rs.git", branch = "main", package = "liburing-proactor" }
+cares = { git = "https://github.com/trunkszi/cares-rs.git", branch = "main" }
 libc = { version = "0.2" }
 sonic-rs = { version = "0.5.10" }
-nexora = { version = "0.0.1" }
+nexora = { git = "https://github.com/trunkszi/nexora-rs.git", branch = "main" }
 lz4_flex = { version = "0.11" }
 zstd = { version = "0.13" }
 arrow-array = { version = "60", default-features = false }
