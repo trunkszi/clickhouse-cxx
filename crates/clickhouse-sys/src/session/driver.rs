@@ -96,7 +96,6 @@ impl Driver {
             resolver.flush(&mut self.ring).map_err(io::Error::other)?;
         }
         let resolver = &mut self.resolver;
-        self.ring.submit().map_err(io::Error::other)?;
         let mut observe = observe;
         #[cfg(test)]
         let fault = self.completion_fault;
@@ -121,9 +120,7 @@ impl Driver {
             }
             Ok(())
         };
-        self.ring
-            .poll_completions(64, &mut dispatch)
-            .map_err(io::Error::other)?;
+        self.ring.tick(&mut dispatch).map_err(io::Error::other)?;
         Ok(())
     }
 
