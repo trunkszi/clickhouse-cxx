@@ -1,0 +1,10 @@
+/target
+/.scratch/
+.scratch/
+
+
+.agents/
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
